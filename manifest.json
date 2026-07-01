@@ -1,0 +1,15 @@
+{
+  "name": "SkogsSpår",
+  "short_name": "SkogsSpår",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#121e15",
+  "theme_color": "#121e15",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/2836/2836376.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
