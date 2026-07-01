@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>SkogsSpår</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <style>
+    :root {
+      --bg-color: #121e15;
+      --surface-color: #1e3323;
+      --text-color: #e0ebe2;
+      --accent-color: #4ade80;
+      --danger-color: #f87171;
+    }
+    
+    body, html {
+      margin: 0; padding: 0; height: 100%;
+      background-color: var(--bg-color);
+      color: var(--text-color);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      overflow: hidden;
+    }
+
+    #map { height: 100vh; width: 100vw; z-index: 1; background: #000; }
+    
+    /* NYTT: Filtret appliceras nu bara på klassen 'dark-tiles' */
+    .dark-tiles {
+      filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
+    }
+
+    #ui-container {
+      position: absolute; bottom: 20px; left: 10px; right: 10px;
+      z-index: 1000; display: flex; flex-direction: column; gap: 10px;
+    }
+
+    .panel {
+      background-color: var(--surface-color);
+      padding: 15px; border-radius: 12px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.5);
+      border: 1px solid #2d4a34;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+
+    .speedometer { font-size: 24px; font-weight: bold; color: var(--accent-color); }
+    
+    button {
+      background-color: #2d4a34; color: var(--text-color);
+      border: none; padding: 12px 18px; border-radius: 8px;
+      font-size: 14px; font-weight: bold; cursor: pointer;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+    }
+    button:active { filter: brightness(1.2); }
+    button.start { background-color: var(--accent-color); color: #000; }
+    button.stop { background-color: var(--danger-color); color: #000; }
+    button.mode-toggle { background-color: #1e3323; border: 1px solid var(--accent-color); }
+
+    #save-modal {
+      display: none; position: absolute; top: 50%; left: 50%;
+      transform: translate(-50%, -50%); z-index: 2000;
+      background: var(--surface-color); padding: 20px;
+      border-radius: 12px; width: 80%; border: 1px solid var(--accent-color);
+    }
+    #save-modal input {
+      width: 100%; padding: 10px; margin-top: 10px; margin-bottom: 10px;
+      background: var(--bg-color); color: var(--text-color); border: none; box-sizing: border-box;
+    }
+    
+    .top-bar {
+      position: absolute; top: 10px; left: 10px; right: 10px; z-index: 1000;
+      display: flex; gap: 8px; justify-content: space-between;
+    }
+    .top-bar-right { display: flex; gap: 8px; }
+  </style>
+</head>
+<body>
+
+  <div id="map"></div>
+
+  <div class="top-bar">
+    <button class="mode-toggle" onclick="toggleMapMode()" id="btn-map-mode">🛰️ Satellit</button>
+    
+    <div class="top-bar-right">
+        <button onclick="exportTrails()">Exportera</button>
+        <button onclick="document.getElementById('file-input').click()">Importera</button>
+        <input type="file" id="file-input" style="display: none;" onchange="importTrails(event)">
+    </div>
+  </div>
+
+  <div id="ui-container">
+    <div class="panel">
+      <div>Fart: <span class="speedometer" id="speed">0</span> km/h</div>
+      <div id="status" style="font-size: 12px; opacity: 0.7;">Redo</div>
+    </div>
+    <div class="panel" style="justify-content: center; gap: 10px;">
+      <button class="start" id="btn-start" onclick="startMapping()">Starta</button>
+      <button id="btn-pause" onclick="pauseMapping()" disabled>Pausa</button>
+      <button class="stop" id="btn-stop" onclick="stopMapping()" disabled>Spara</button>
+    </div>
+  </div>
+
+  <div id="save-modal">
+    <h3>Spara Stig</h3>
+    <input type="text" id="trail-name" placeholder="Stigens namn">
+    <label>Färg:</label>
+    <input type="color" id="trail-color" value="#4ade80" style="height:50px;">
+    <button onclick="saveTrail()" class="start" style="width: 100%; margin-top: 10px;">Spara Stig</button>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/@turf/turf@6/turf.min.js"></script>
+
+  <script>
+    if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
+
+    // 2. Initiera Kart-lager
+    const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      className: 'dark-tiles' // Denna klass får filtret i CSS
+    });
+
+    const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 19,
+      attribution: 'Tiles &copy; Esri'
+    });
+
+    const map = L.map('map', {
+        layers: [osmLayer], // Börja med skogstemat
+        zoomControl: false // Ta bort zoom-knappar för renare mobil-look
+    }).fitWorld();
+
+    let currentMode = 'forest'; // 'forest' eller 'satellite'
+
+    function toggleMapMode() {
+        const btn = document.getElementById('btn-map-mode');
+        if (currentMode === 'forest') {
+            map.removeLayer(osmLayer);
+            map.addLayer(satelliteLayer);
+            currentMode = 'satellite';
+            btn.innerText = "🌲 Skogstema";
+        } else {
+            map.removeLayer(satelliteLayer);
+            map.addLayer(osmLayer);
+            currentMode = 'forest';
+            btn.innerText = "🛰️ Satellit";
+        }
+    }
+
+    // Centrera på användaren
+    map.locate({setView: true, maxZoom: 16});
+
+    // --- Samma logik som tidigare ---
+    let allTrails = JSON.parse(localStorage.getItem('skogsspar_trails')) || [];
+    let currentPathCoords = []; 
+    let currentPolylineElements = [];
+    let watchId = null;
+    let isPaused = false;
+    let minAlt = 9999, maxAlt = -9999;
+    let currentUserMarker = null;
+
+    renderAllTrails();
+
+    function startMapping() {
+      if(watchId && !isPaused) return;
+      isPaused = false;
+      document.getElementById('btn-start').disabled = true;
+      document.getElementById('btn-pause').disabled = false;
+      document.getElementById('btn-stop').disabled = false;
+      document.getElementById('status').innerText = "Mappar...";
+      if(!watchId) {
+        watchId = navigator.geolocation.watchPosition(updatePosition, handleError, {
+          enableHighAccuracy: true, maximumAge: 0, timeout: 5000
+        });
+      }
+    }
+
+    function pauseMapping() {
+      isPaused = true;
+      document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-start').innerText = "Fortsätt";
+      document.getElementById('btn-pause').disabled = true;
+      document.getElementById('status').innerText = "Pausad";
+    }
+
+    function stopMapping() {
+      isPaused = true;
+      if(currentPathCoords.length < 2) {
+        alert("För kort.");
+        resetMappingState();
+        return;
+      }
+      document.getElementById('save-modal').style.display = 'block';
+    }
+
+    function updatePosition(position) {
+      if (isPaused) return;
+      const lat = position.coords.latitude;
+      const lon = position.coords.longitude;
+      const alt = position.coords.altitude || 0;
+      let speed = position.coords.speed || 0; 
+      
+      document.getElementById('speed').innerText = (speed * 3.6).toFixed(1);
+
+      if (!currentUserMarker) {
+        currentUserMarker = L.circleMarker([lat, lon], {color: 'white', fillColor: '#4ade80', fillOpacity: 1, radius: 6}).addTo(map);
+      } else {
+        currentUserMarker.setLatLng([lat, lon]);
+      }
+      map.setView([lat, lon]);
+
+      // Deduplicering
+      const pt = turf.point([lon, lat]);
+      for (let trail of allTrails) {
+        if(trail.coords.length < 2) continue;
+        const line = turf.lineString(trail.coords.map(c => [c[1], c[0]]));
+        if (turf.pointToLineDistance(pt, line, {units: 'meters'}) < 3) return;
+      }
+
+      if(alt < minAlt) minAlt = alt;
+      if(alt > maxAlt) maxAlt = alt;
+      currentPathCoords.push([lat, lon, alt]);
+
+      if (currentPathCoords.length > 1) {
+        const p = L.polyline([currentPathCoords[currentPathCoords.length-2], [lat, lon]], {
+          color: '#ffffff', weight: 4, opacity: 0.8, dashArray: '5, 10'
+        }).addTo(map);
+        currentPolylineElements.push(p);
+      }
+    }
+
+    function saveTrail() {
+      const name = document.getElementById('trail-name').value || "Ny stig";
+      const color = document.getElementById('trail-color').value;
+      allTrails.push({ name, color, coords: currentPathCoords, minAlt, maxAlt });
+      localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+      document.getElementById('save-modal').style.display = 'none';
+      resetMappingState();
+      renderAllTrails();
+    }
+
+    function renderAllTrails() {
+      map.eachLayer((layer) => { if (layer instanceof L.Polyline) map.removeLayer(layer); });
+      allTrails.forEach(trail => {
+        if (trail.maxAlt > trail.minAlt && trail.maxAlt !== 0) {
+          for (let i = 0; i < trail.coords.length - 1; i++) {
+            const p1 = trail.coords[i]; const p2 = trail.coords[i+1];
+            const ratio = ( ((p1[2]+p2[2])/2) - trail.minAlt) / (trail.maxAlt - trail.minAlt);
+            L.polyline([[p1[0], p1[1]], [p2[0], p2[1]]], {
+              color: shadeColor(trail.color, (ratio - 0.5) * 60), weight: 5
+            }).bindPopup(trail.name).addTo(map);
+          }
+        } else {
+          L.polyline(trail.coords.map(c => [c[0], c[1]]), {color: trail.color, weight: 5}).bindPopup(trail.name).addTo(map);
+        }
+      });
+    }
+
+    function resetMappingState() {
+      if(watchId) navigator.geolocation.clearWatch(watchId);
+      watchId = null; isPaused = false; currentPathCoords = [];
+      currentPolylineElements.forEach(p => map.removeLayer(p));
+      currentPolylineElements = [];
+      document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-pause').disabled = true;
+      document.getElementById('btn-stop').disabled = true;
+      document.getElementById('speed').innerText = "0";
+    }
+
+    function exportTrails() {
+      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(allTrails));
+      const a = document.createElement('a'); a.setAttribute("href", dataStr); a.setAttribute("download", "stigar.json"); a.click();
+    }
+
+    function importTrails(event) {
+      const reader = new FileReader();
+      reader.onload = (e) => { 
+        allTrails = allTrails.concat(JSON.parse(e.target.result)); 
+        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails)); 
+        renderAllTrails(); 
+      };
+      reader.readAsText(event.target.files[0]);
+    }
+
+    function shadeColor(color, percent) {
+      let R = parseInt(color.substring(1,3),16), G = parseInt(color.substring(3,5),16), B = parseInt(color.substring(5,7),16);
+      R = parseInt(R * (100 + percent) / 100); G = parseInt(G * (100 + percent) / 100); B = parseInt(B * (100 + percent) / 100);
+      R = (R<255)?R:255; G = (G<255)?G:255; B = (B<255)?B:255;
+      return "#"+((1 << 24) + (R << 16) + (G << 8) + B).toString(16).slice(1);
+    }
+
+    function handleError(e) { console.warn(e); }
+  </script>
+</body>
+</html>
