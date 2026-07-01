@@ -128,7 +128,6 @@
   <script>
     if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
 
-    // Kart-lager
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 22,
       maxNativeZoom: 19,
@@ -164,7 +163,6 @@
         }
     }
 
-    // Globala variabler
     let allTrails = JSON.parse(localStorage.getItem('skogsspar_trails')) || [];
     let currentPathCoords = []; 
     let currentPolylineElements = [];
@@ -176,7 +174,6 @@
     renderAllTrails();
     updateNearestTrailText(null);
 
-    // Starta GPS-spårning direkt för både position och sökning av stigar
     function initGPS() {
       if (navigator.geolocation) {
         navigator.geolocation.watchPosition(updatePosition, handleError, {
@@ -189,17 +186,16 @@
       }
     }
     
-    // Kör igång positionslyssnaren direkt när appen öppnas
     initGPS();
 
     function startMapping() {
-      if(watchId) return; // Redan igång
+      if(watchId) return; 
       isPaused = false;
       document.getElementById('btn-start').disabled = true;
       document.getElementById('btn-pause').disabled = false;
       document.getElementById('btn-stop').disabled = false;
       document.getElementById('status').innerText = "Mappar...";
-      watchId = true; // Sätt en flagga att vi spelar in
+      watchId = true; 
     }
 
     function pauseMapping() {
@@ -226,24 +222,19 @@
       const alt = position.coords.altitude || 0;
       let speed = position.coords.speed || 0; 
       
-      // Sätt fart
       document.getElementById('speed').innerText = speed > 0 ? (speed * 3.6).toFixed(1) : "0";
 
-      // Uppdatera eller skapa användarmarkör
       if (!currentUserMarker) {
         currentUserMarker = L.circleMarker([lat, lon], {color: 'white', fillColor: '#4ade80', fillOpacity: 1, radius: 6}).addTo(map);
-        map.setView([lat, lon], 16); // Centrera första gången vi hittar användaren
+        map.setView([lat, lon], 16); 
       } else {
         currentUserMarker.setLatLng([lat, lon]);
       }
 
-      // Kolla alltid närmaste stig inom 100m, oavsett om vi spelar in eller inte
       checkNearestTrail(lat, lon);
 
-      // Om vi inte tryckt på "Starta", eller om vi har pausat, gör inget mer.
       if (!watchId || isPaused) return;
 
-      // Deduplicering (3 meter)
       const pt = turf.point([lon, lat]);
       let isTooClose = false;
       for (let trail of allTrails) {
@@ -320,7 +311,17 @@
     }
 
     function renderAllTrails() {
-      map.eachLayer((layer) => { if (layer instanceof L.Polyline) map.removeLayer(layer); });
+      // Rensa befintliga utritade stigar och korsningar innan vi ritar om dem
+      map.eachLayer((layer) => { 
+        if (layer instanceof L.Polyline && layer !== currentUserMarker) {
+            map.removeLayer(layer); 
+        }
+        if (layer.options && layer.options.isIntersection) {
+            map.removeLayer(layer);
+        }
+      });
+
+      // Rita stigar
       allTrails.forEach(trail => {
         if (trail.maxAlt > trail.minAlt && trail.maxAlt !== 0) {
           for (let i = 0; i < trail.coords.length - 1; i++) {
@@ -334,6 +335,72 @@
           L.polyline(trail.coords.map(c => [c[0], c[1]]), {color: trail.color, weight: 5}).bindPopup(trail.name).addTo(map);
         }
       });
+
+      // Rita korsningar
+      renderIntersections();
+    }
+
+    // --- NY FUNKTION: Hitta och rita ut korsningar ---
+    function renderIntersections() {
+      let intersectionPoints = [];
+
+      function addIntersectionMarker(lat, lon, name1, name2) {
+        let pt = turf.point([lon, lat]);
+        // Se till att vi inte lägger flera punkter exakt på samma ställe
+        for(let existing of intersectionPoints) {
+          if(turf.distance(pt, existing.pt, {units: 'meters'}) < 10) return;
+        }
+        intersectionPoints.push({pt: pt});
+
+        L.circleMarker([lat, lon], {
+          color: '#fff',
+          fillColor: '#f59e0b', // Snygg orange färg för korsningar
+          fillOpacity: 1,
+          radius: 7,
+          weight: 2,
+          isIntersection: true // Egen flagga så vi kan rensa dem
+        }).bindPopup(`<div style="text-align:center;"><b>Korsning</b><br>${name1} ⇌ ${name2}</div>`).addTo(map);
+      }
+
+      for (let i = 0; i < allTrails.length; i++) {
+        for (let j = i + 1; j < allTrails.length; j++) {
+          let t1 = allTrails[i];
+          let t2 = allTrails[j];
+          if (t1.coords.length < 2 || t2.coords.length < 2) continue;
+
+          let line1 = turf.lineString(t1.coords.map(c => [c[1], c[0]]));
+          let line2 = turf.lineString(t2.coords.map(c => [c[1], c[0]]));
+
+          // 1. Letar efter exakta korsningar där de klyver varandra
+          let intersects = turf.lineIntersect(line1, line2);
+          intersects.features.forEach(pt => {
+            let coords = pt.geometry.coordinates;
+            addIntersectionMarker(coords[1], coords[0], t1.name, t2.name);
+          });
+
+          // 2. Kollar om start eller slut på Stig 1 ligger inom 5 meter från Stig 2
+          let t1Start = turf.point([t1.coords[0][1], t1.coords[0][0]]);
+          let t1End = turf.point([t1.coords[t1.coords.length-1][1], t1.coords[t1.coords.length-1][0]]);
+          
+          if (turf.pointToLineDistance(t1Start, line2, {units: 'meters'}) < 5) {
+            addIntersectionMarker(t1.coords[0][0], t1.coords[0][1], t1.name, t2.name);
+          }
+          if (turf.pointToLineDistance(t1End, line2, {units: 'meters'}) < 5) {
+            addIntersectionMarker(t1.coords[t1.coords.length-1][0], t1.coords[t1.coords.length-1][1], t1.name, t2.name);
+          }
+          
+          // 3. Kollar om start eller slut på Stig 2 ligger inom 5 meter från Stig 1
+          let t2Start = turf.point([t2.coords[0][1], t2.coords[0][0]]);
+          let t2End = turf.point([t2.coords[t2.coords.length-1][1], t2.coords[t2.coords.length-1][0]]);
+          
+          if (turf.pointToLineDistance(t2Start, line1, {units: 'meters'}) < 5) {
+            addIntersectionMarker(t2.coords[0][0], t2.coords[0][1], t2.name, t1.name);
+          }
+          if (turf.pointToLineDistance(t2End, line1, {units: 'meters'}) < 5) {
+            addIntersectionMarker(t2.coords[t2.coords.length-1][0], t2.coords[t2.coords.length-1][1], t2.name, t1.name);
+          }
+        }
+      }
     }
 
     function resetMappingState() {
