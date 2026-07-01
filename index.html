@@ -14,6 +14,7 @@
       --text-color: #e0ebe2;
       --accent-color: #4ade80;
       --danger-color: #f87171;
+      --warning-color: #f59e0b;
     }
     
     body, html {
@@ -48,11 +49,7 @@
     .nearest-trail-text {
       font-weight: bold;
       font-size: 16px;
-      text-shadow: 
-        -1px -1px 0 #fff,  
-         1px -1px 0 #fff,
-        -1px  1px 0 #fff,
-         1px  1px 0 #fff;
+      text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;
       color: #000;
     }
 
@@ -67,11 +64,12 @@
     button.stop { background-color: var(--danger-color); color: #000; }
     button.mode-toggle { background-color: #1e3323; border: 1px solid var(--accent-color); }
 
-    .delete-popup-btn {
-      background-color: var(--danger-color); color: black; border: none;
-      padding: 6px 10px; margin-top: 8px; border-radius: 4px;
-      font-weight: bold; cursor: pointer; width: 100%;
+    .popup-btn {
+      color: black; border: none; padding: 6px 10px; margin-top: 6px; 
+      border-radius: 4px; font-weight: bold; cursor: pointer; width: 100%;
     }
+    .delete-btn { background-color: var(--danger-color); }
+    .edit-btn { background-color: var(--warning-color); }
 
     #save-modal {
       display: none; position: absolute; top: 50%; left: 50%;
@@ -90,9 +88,8 @@
     }
     .top-bar-right { display: flex; gap: 8px; }
 
-    /* Stil för den nya versionstexten */
     .app-version {
-      position: absolute; bottom: 2px; right: 108px; z-index: 1010;
+      position: absolute; bottom: 2px; right: 8px; z-index: 1010;
       font-size: 10px; color: var(--text-color); opacity: 0.4;
       pointer-events: none; user-select: none;
     }
@@ -101,12 +98,10 @@
 <body>
 
   <div id="map"></div>
-
-  <div class="app-version">v1.2.0</div>
+  <div class="app-version">v1.4.0</div>
 
   <div class="top-bar">
     <button class="mode-toggle" onclick="toggleMapMode()" id="btn-map-mode">🛰️ Satellit</button>
-    
     <div class="top-bar-right">
         <button onclick="exportTrails()">Exportera</button>
         <button onclick="document.getElementById('file-input').click()">Importera</button>
@@ -130,11 +125,11 @@
   </div>
 
   <div id="save-modal">
-    <h3>Spara Stig</h3>
+    <h3 id="modal-title">Spara Stig</h3>
     <input type="text" id="trail-name" placeholder="Stigens namn">
     <label>Färg:</label>
     <input type="color" id="trail-color" value="#4ade80" style="height:50px;">
-    <button onclick="saveTrail()" class="start" style="width: 100%; margin-top: 10px;">Spara Stig</button>
+    <button id="btn-modal-submit" onclick="handleModalSubmit()" class="start" style="width: 100%; margin-top: 10px;">Spara</button>
   </div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -146,13 +141,11 @@
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 22, maxNativeZoom: 19, className: 'dark-tiles'
     });
-
     const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
       maxZoom: 22, maxNativeZoom: 17, attribution: 'Tiles &copy; Esri'
     });
 
     const map = L.map('map', { layers: [osmLayer], zoomControl: false, maxZoom: 22 }).fitWorld();
-
     let currentMode = 'forest';
 
     function toggleMapMode() {
@@ -172,9 +165,11 @@
     let watchId = null;
     let isPaused = false;
     let currentUserMarker = null;
-    
-    let isMovingBackwards = false;
-    let uturnIndex = -1; 
+
+    // Kö-system för att spara flera delar efter varandra
+    let savingSegments = [];
+    let savingCurrentIndex = 0;
+    let editingTrailIndex = null; // Håller koll om vi bara redigerar en befintlig stig
 
     renderAllTrails();
     updateNearestTrailText(null);
@@ -191,10 +186,8 @@
     initGPS();
 
     function startMapping() {
-      if(watchId) return; 
+      if (watchId && !isPaused) return;
       isPaused = false;
-      isMovingBackwards = false;
-      uturnIndex = -1;
       document.getElementById('btn-start').disabled = true;
       document.getElementById('btn-pause').disabled = false;
       document.getElementById('btn-stop').disabled = false;
@@ -217,7 +210,7 @@
         resetMappingState();
         return;
       }
-      document.getElementById('save-modal').style.display = 'block';
+      processAndOpenSaveFlow();
     }
 
     function updatePosition(position) {
@@ -239,57 +232,6 @@
 
       if (!watchId || isPaused) return;
 
-      const pt = turf.point([lon, lat]);
-
-      let isTooCloseToOther = false;
-      for (let trail of allTrails) {
-        if(trail.coords.length < 2) continue;
-        const line = turf.lineString(trail.coords.map(c => [c[1], c[0]]));
-        if (turf.pointToLineDistance(pt, line, {units: 'meters'}) < 3) {
-          isTooCloseToOther = true;
-          break;
-        }
-      }
-      if (isTooCloseToOther) {
-        document.getElementById('status').innerText = "Nära befintlig stig...";
-        return;
-      }
-
-      if (currentPathCoords.length > 4) {
-        const activeLineCoords = currentPathCoords.slice(0, -3).map(c => [c[1], c[0]]);
-        const activeLine = turf.lineString(activeLineCoords);
-        const distToOwnTrack = turf.pointToLineDistance(pt, activeLine, {units: 'meters'});
-
-        if (distToOwnTrack < 4) { 
-          if (!isMovingBackwards) {
-            isMovingBackwards = true;
-            uturnIndex = currentPathCoords.length - 1;
-            document.getElementById('status').innerText = "Vändning upptäckt!";
-          }
-          return;
-        } else {
-          if (isMovingBackwards) {
-            document.getElementById('status').innerText = "Svängt av! Startar ny del.";
-            const firstHalfCoords = currentPathCoords.slice(0, uturnIndex);
-            if (firstHalfCoords.length >= 2) {
-              allTrails.push({
-                name: (document.getElementById('trail-name').value || "Ny stig") + " (Del 1)",
-                color: "#4ade80",
-                coords: firstHalfCoords
-              });
-              snapTrails();
-              localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
-            }
-            currentPathCoords = [];
-            currentPolylineElements.forEach(p => map.removeLayer(p));
-            currentPolylineElements = [];
-            isMovingBackwards = false;
-            uturnIndex = -1;
-            renderAllTrails();
-          }
-        }
-      }
-
       document.getElementById('status').innerText = "Spelar in...";
       currentPathCoords.push([lat, lon, alt]);
 
@@ -298,6 +240,137 @@
           color: '#ffffff', weight: 4, opacity: 0.8, dashArray: '5, 10', isRecording: true
         }).addTo(map);
         currentPolylineElements.push(p);
+      }
+    }
+
+    // Kraftfull efterbehandling: Rensar U-svängar OCH bitar som går ovanpå gamla stigar
+    function processAndOpenSaveFlow() {
+      let segments = [];
+      let currentSegment = [];
+      let isBacktracking = false;
+      let lastBacktrackIndex = 0;
+
+      for (let i = 0; i < currentPathCoords.length; i++) {
+        let pt = turf.point([currentPathCoords[i][1], currentPathCoords[i][0]]);
+        
+        // 1. Kolla om vi är nära en ANNAN redan sparad stig (>3m)
+        let isOverlappingOther = false;
+        for (let trail of allTrails) {
+          if (trail.coords.length < 2) continue;
+          let otherLine = turf.lineString(trail.coords.map(c => [c[1], c[0]]));
+          if (turf.pointToLineDistance(pt, otherLine, {units: 'meters'}) <= 3) {
+            isOverlappingOther = true;
+            break;
+          }
+        }
+
+        // 2. Kolla om vi gör en U-sväng på vår EGEN pågående stig (>3m)
+        let isBacktrackingOwn = false;
+        if (currentSegment.length > 5) {
+          let historyLine = turf.lineString(currentSegment.slice(0, -4).map(c => [c[1], c[0]]));
+          if (turf.pointToLineDistance(pt, historyLine, {units: 'meters'}) <= 3) {
+            isBacktrackingOwn = true;
+          }
+        }
+
+        // Om vi antingen överlappar en gammal stig eller går baklänges
+        if (isOverlappingOther || isBacktrackingOwn) {
+          if (isBacktrackingOwn) {
+            isBacktracking = true;
+            lastBacktrackIndex = i;
+          }
+          // Klipp stigen här, spara det vi har hittills som ett giltigt segment
+          if (currentSegment.length >= 2) {
+            segments.push(currentSegment);
+          }
+          currentSegment = []; // Töm pågående (pausar sparandet under överlappet)
+        } else {
+          // Vi går på orörd mark!
+          if (isBacktracking) {
+            // Vi har svängt av från en U-sväng, starta segmentet från vändpunkten
+            currentSegment.push(currentPathCoords[lastBacktrackIndex]);
+            isBacktracking = false;
+          }
+          currentSegment.push(currentPathCoords[i]);
+        }
+      }
+
+      if (currentSegment.length >= 2) {
+        segments.push(currentSegment);
+      }
+
+      if (segments.length === 0) {
+        alert("Hela spåret rensades eftersom du bara gick på redan sparade stigar eller vände om helt.");
+        resetMappingState();
+        return;
+      }
+
+      // Starta spara-flödet för alla skapade segment
+      savingSegments = segments;
+      savingCurrentIndex = 0;
+      editingTrailIndex = null;
+      openSaveModal();
+    }
+
+    function openSaveModal() {
+      document.getElementById('save-modal').style.display = 'block';
+      if (editingTrailIndex !== null) {
+        document.getElementById('modal-title').innerText = "Ändra Stig";
+        document.getElementById('trail-name').value = allTrails[editingTrailIndex].name;
+        document.getElementById('trail-color').value = allTrails[editingTrailIndex].color;
+      } else {
+        const total = savingSegments.length;
+        document.getElementById('modal-title').innerText = `Spara Stig (${savingCurrentIndex + 1} av ${total})`;
+        document.getElementById('trail-name').value = total > 1 ? `Ny stig del ${savingCurrentIndex + 1}` : "Ny stig";
+        document.getElementById('trail-color').value = "#4ade80";
+      }
+    }
+
+    function handleModalSubmit() {
+      const name = document.getElementById('trail-name').value || "Namnlös stig";
+      const color = document.getElementById('trail-color').value;
+
+      if (editingTrailIndex !== null) {
+        // Vi uppdaterar bara en befintlig stig
+        allTrails[editingTrailIndex].name = name;
+        allTrails[editingTrailIndex].color = color;
+        editingTrailIndex = null;
+      } else {
+        // Vi sparar ett segment från kön
+        allTrails.push({
+          name: name,
+          color: color,
+          coords: savingSegments[savingCurrentIndex]
+        });
+
+        savingCurrentIndex++;
+        if (savingCurrentIndex < savingSegments.length) {
+          // Det finns fler delar att namnge, öppna rutan igen
+          openSaveModal();
+          return;
+        }
+      }
+
+      // Färdig med alla delar, stäng ner och återställ
+      snapTrails();
+      localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+      document.getElementById('save-modal').style.display = 'none';
+      resetMappingState();
+      renderAllTrails();
+    }
+
+    // Öppnar rutan för att ändra namn och färg i efterhand
+    function editTrail(index) {
+      editingTrailIndex = index;
+      map.closePopup();
+      openSaveModal();
+    }
+
+    function deleteTrail(index) {
+      if (confirm(`Vill du ta bort stigen: "${allTrails[index].name}"?`)) {
+        allTrails.splice(index, 1);
+        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+        renderAllTrails();
       }
     }
 
@@ -330,14 +403,6 @@
       if (modified) localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
     }
 
-    function deleteTrail(index) {
-      if (confirm(`Vill du ta bort stigen: "${allTrails[index].name}"?`)) {
-        allTrails.splice(index, 1);
-        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
-        renderAllTrails();
-      }
-    }
-
     function checkNearestTrail(currentLat, currentLon) {
       if (allTrails.length === 0) { updateNearestTrailText(null); return; }
       const currentPt = turf.point([currentLon, currentLat]);
@@ -358,25 +423,6 @@
       else { element.innerText = "Ingen stig nära"; element.style.color = "#a1a1aa"; }
     }
 
-    function saveTrail() {
-      const name = document.getElementById('trail-name').value || "Ny stig";
-      const color = document.getElementById('trail-color').value;
-      
-      if (isMovingBackwards && uturnIndex !== -1) {
-        currentPathCoords = currentPathCoords.slice(0, uturnIndex);
-      }
-
-      if (currentPathCoords.length >= 2) {
-        allTrails.push({ name, color, coords: currentPathCoords });
-        snapTrails();
-        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
-      }
-
-      document.getElementById('save-modal').style.display = 'none';
-      resetMappingState();
-      renderAllTrails();
-    }
-
     function renderAllTrails() {
       let globalMinAlt = 0; let globalMaxAlt = 10;
       allTrails.forEach(trail => {
@@ -391,7 +437,6 @@
         if (layer.options && layer.options.isIntersection) map.removeLayer(layer);
       });
 
-      // 1. Mörk Kant
       allTrails.forEach(trail => {
         if (trail.coords.length < 2) return;
         L.polyline(trail.coords.map(c => [c[0], c[1]]), {
@@ -399,16 +444,17 @@
         }).addTo(map);
       });
 
-      // 2. Själva stigen + Popup
       allTrails.forEach((trail, index) => {
         const fullPath = L.polyline(trail.coords.map(c => [c[0], c[1]]), {
           opacity: 0, weight: 10
         });
 
+        // Uppdaterad Popup med BÅDE Ändra- och Ta bort-knappar
         const popupContent = `
-          <div style="text-align:center; font-family:sans-serif;">
-            <b>${trail.name}</b><br>
-            <button class="delete-popup-btn" onclick="deleteTrail(${index})">🗑️ Ta bort stig</button>
+          <div style="text-align:center; font-family:sans-serif; min-width: 130px;">
+            <b style="font-size:14px;">${trail.name}</b><br>
+            <button class="popup-btn edit-btn" onclick="editTrail(${index})">⚙️ Ändra namn/färg</button>
+            <button class="popup-btn delete-btn" onclick="deleteTrail(${index})">🗑️ Ta bort stig</button>
           </div>
         `;
         fullPath.bindPopup(popupContent).addTo(map);
@@ -468,7 +514,7 @@
     }
 
     function resetMappingState() {
-      watchId = null; isPaused = false; isMovingBackwards = false; uturnIndex = -1;
+      watchId = null; isPaused = false;
       currentPathCoords = [];
       currentPolylineElements.forEach(p => map.removeLayer(p));
       currentPolylineElements = [];
