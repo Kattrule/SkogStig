@@ -67,17 +67,10 @@
     button.stop { background-color: var(--danger-color); color: #000; }
     button.mode-toggle { background-color: #1e3323; border: 1px solid var(--accent-color); }
 
-    /* Röd knapp för popupen */
     .delete-popup-btn {
-      background-color: var(--danger-color);
-      color: black;
-      border: none;
-      padding: 6px 10px;
-      margin-top: 8px;
-      border-radius: 4px;
-      font-weight: bold;
-      cursor: pointer;
-      width: 100%;
+      background-color: var(--danger-color); color: black; border: none;
+      padding: 6px 10px; margin-top: 8px; border-radius: 4px;
+      font-weight: bold; cursor: pointer; width: 100%;
     }
 
     #save-modal {
@@ -96,11 +89,20 @@
       display: flex; gap: 8px; justify-content: space-between;
     }
     .top-bar-right { display: flex; gap: 8px; }
+
+    /* Stil för den nya versionstexten */
+    .app-version {
+      position: absolute; bottom: 2px; right: 8px; z-index: 1010;
+      font-size: 10px; color: var(--text-color); opacity: 0.4;
+      pointer-events: none; user-select: none;
+    }
   </style>
 </head>
 <body>
 
   <div id="map"></div>
+
+  <div class="app-version">v1.2.0</div>
 
   <div class="top-bar">
     <button class="mode-toggle" onclick="toggleMapMode()" id="btn-map-mode">🛰️ Satellit</button>
@@ -171,7 +173,6 @@
     let isPaused = false;
     let currentUserMarker = null;
     
-    // Variabler för den avancerade vändnings- och tillbakagångsdetekteringen
     let isMovingBackwards = false;
     let uturnIndex = -1; 
 
@@ -240,7 +241,6 @@
 
       const pt = turf.point([lon, lat]);
 
-      // Global deduplicering mot ALLA ANDRA färdiga stigar (3 meter)
       let isTooCloseToOther = false;
       for (let trail of allTrails) {
         if(trail.coords.length < 2) continue;
@@ -255,29 +255,21 @@
         return;
       }
 
-      // --- AVANCERAD DEDUPLICERING: Vändningar (U-turns) på aktiv stig ---
       if (currentPathCoords.length > 4) {
-        // Skapa en linje av det vi hittills har spelat in (exkluderat de allra sista punkterna)
         const activeLineCoords = currentPathCoords.slice(0, -3).map(c => [c[1], c[0]]);
         const activeLine = turf.lineString(activeLineCoords);
-        
-        // Kolla om vår nuvarande position krockar med spåret vi nyss lade bakom oss
         const distToOwnTrack = turf.pointToLineDistance(pt, activeLine, {units: 'meters'});
 
         if (distToOwnTrack < 4) { 
-          // Vi rör oss bakåt längs vår egen väg!
           if (!isMovingBackwards) {
             isMovingBackwards = true;
-            uturnIndex = currentPathCoords.length - 1; // Kom ihåg exakt vart vi vände om
+            uturnIndex = currentPathCoords.length - 1;
             document.getElementById('status').innerText = "Vändning upptäckt!";
           }
-          return; // Spara inte punkter så länge vi åker bakåt
+          return;
         } else {
-          // Om vi har rört oss bakåt men nu INTE längre är nära det gamla spåret = Vi har svängt av!
           if (isMovingBackwards) {
             document.getElementById('status').innerText = "Svängt av! Startar ny del.";
-            
-            // 1. Klipp av den första stigen vid vändpunkten och spara den direkt i minnet
             const firstHalfCoords = currentPathCoords.slice(0, uturnIndex);
             if (firstHalfCoords.length >= 2) {
               allTrails.push({
@@ -288,14 +280,11 @@
               snapTrails();
               localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
             }
-
-            // 2. Starta om den pågående inspelningen automatiskt för den nya svängen
             currentPathCoords = [];
             currentPolylineElements.forEach(p => map.removeLayer(p));
             currentPolylineElements = [];
             isMovingBackwards = false;
             uturnIndex = -1;
-            
             renderAllTrails();
           }
         }
@@ -341,7 +330,6 @@
       if (modified) localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
     }
 
-    // --- NY FUNKTION: Radera en specifik stig baserat på index ---
     function deleteTrail(index) {
       if (confirm(`Vill du ta bort stigen: "${allTrails[index].name}"?`)) {
         allTrails.splice(index, 1);
@@ -374,7 +362,6 @@
       const name = document.getElementById('trail-name').value || "Ny stig";
       const color = document.getElementById('trail-color').value;
       
-      // Om vi slutade mitt i en vändning, klipp bort det felaktiga spåret bakåt
       if (isMovingBackwards && uturnIndex !== -1) {
         currentPathCoords = currentPathCoords.slice(0, uturnIndex);
       }
@@ -412,14 +399,12 @@
         }).addTo(map);
       });
 
-      // 2. Själva stigen + Popup med raderingsknapp
+      // 2. Själva stigen + Popup
       allTrails.forEach((trail, index) => {
-        // Skapa en osynlig/sammanhållen linje ovanpå för att fästa popupen på hela stigen
         const fullPath = L.polyline(trail.coords.map(c => [c[0], c[1]]), {
           opacity: 0, weight: 10
         });
 
-        // Popup-HTML med knapp som anropar deleteTrail(index)
         const popupContent = `
           <div style="text-align:center; font-family:sans-serif;">
             <b>${trail.name}</b><br>
@@ -428,7 +413,6 @@
         `;
         fullPath.bindPopup(popupContent).addTo(map);
 
-        // Rita de färgade segmenten baserat på global höjd
         for (let i = 0; i < trail.coords.length - 1; i++) {
           const p1 = trail.coords[i]; const p2 = trail.coords[i+1];
           const alt = (p1[2] + p2[2]) / 2;
