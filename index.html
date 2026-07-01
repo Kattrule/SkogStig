@@ -45,6 +45,22 @@
 
     .speedometer { font-size: 24px; font-weight: bold; color: var(--accent-color); }
     
+    /* Stil för texten som visar närmaste stig med en vit kant/skugga runt */
+    .nearest-trail-text {
+      font-weight: bold;
+      font-size: 16px;
+      text-shadow: 
+        -2px -2px 0 #fff,  
+         2px -2px 0 #fff,
+        -2px  2px 0 #fff,
+         2px  2px 0 #fff,
+        -2px  0px 0 #fff,
+         2px  0px 0 #fff,
+         0px -2px 0 #fff,
+         0px  2px 0 #fff;
+      color: #000; /* Fallback */
+    }
+
     button {
       background-color: #2d4a34; color: var(--text-color);
       border: none; padding: 12px 18px; border-radius: 8px;
@@ -90,7 +106,10 @@
 
   <div id="ui-container">
     <div class="panel">
-      <div>Fart: <span class="speedometer" id="speed">0</span> km/h</div>
+      <div>
+        <span id="nearest-trail" class="nearest-trail-text" style="margin-right: 15px;">Söker stig...</span>
+        Fart: <span class="speedometer" id="speed">0</span> km/h
+      </div>
       <div id="status" style="font-size: 12px; opacity: 0.7;">Redo</div>
     </div>
     <div class="panel" style="justify-content: center; gap: 10px;">
@@ -114,7 +133,6 @@
   <script>
     if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
 
-    // Fixar så att du kan zooma in max utan gråa rutor (maxZoom / maxNativeZoom)
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 22,
       maxNativeZoom: 19,
@@ -161,6 +179,7 @@
     let currentUserMarker = null;
 
     renderAllTrails();
+    updateNearestTrailText(null); // Sätt starttexten till "Ingen stig nära"
 
     function startMapping() {
       if(watchId && !isPaused) return;
@@ -195,7 +214,6 @@
     }
 
     function updatePosition(position) {
-      if (isPaused) return;
       const lat = position.coords.latitude;
       const lon = position.coords.longitude;
       const alt = position.coords.altitude || 0;
@@ -209,6 +227,11 @@
         currentUserMarker.setLatLng([lat, lon]);
       }
       map.setView([lat, lon]);
+
+      // Hitta och uppdatera närmaste stig inom 100m baserat på vår nuvarande GPS-punkt
+      checkNearestTrail(lat, lon);
+
+      if (isPaused) return;
 
       // Deduplicering (3 meter)
       const pt = turf.point([lon, lat]);
@@ -227,6 +250,43 @@
           color: '#ffffff', weight: 4, opacity: 0.8, dashArray: '5, 10'
         }).addTo(map);
         currentPolylineElements.push(p);
+      }
+    }
+
+    // NY FUNKTION: Letar efter den närmaste stigen inom 100 meter
+    function checkNearestTrail(currentLat, currentLon) {
+      if (allTrails.length === 0) {
+        updateNearestTrailText(null);
+        return;
+      }
+
+      const currentPt = turf.point([currentLon, currentLat]);
+      let closestTrail = null;
+      let minDistance = 100; // Vi bryr oss bara om stigar inom 100m
+
+      allTrails.forEach(trail => {
+        if(trail.coords.length < 2) return;
+        const line = turf.lineString(trail.coords.map(c => [c[1], c[0]]));
+        const distance = turf.pointToLineDistance(currentPt, line, {units: 'meters'});
+        
+        if (distance < minDistance) {
+          minDistance = distance;
+          closestTrail = trail;
+        }
+      });
+
+      updateNearestTrailText(closestTrail);
+    }
+
+    // NY FUNKTION: Ändrar texten i gränssnittet baserat på resultatet
+    function updateNearestTrailText(trail) {
+      const element = document.getElementById('nearest-trail');
+      if (trail) {
+        element.innerText = trail.name;
+        element.style.color = trail.color; // Ger texten stigens färg
+      } else {
+        element.innerText = "Ingen stig nära";
+        element.style.color = "#a1a1aa"; // Grå färg om det är tomt
       }
     }
 
