@@ -26,7 +26,6 @@
 
     #map { height: 100vh; width: 100vw; z-index: 1; background: #000; }
     
-    /* NYTT: Filtret appliceras nu bara på klassen 'dark-tiles' */
     .dark-tiles {
       filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
     }
@@ -115,23 +114,26 @@
   <script>
     if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
 
-    // 2. Initiera Kart-lager
+    // Fixar så att du kan zooma in max utan gråa rutor (maxZoom / maxNativeZoom)
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      className: 'dark-tiles' // Denna klass får filtret i CSS
+      maxZoom: 22,
+      maxNativeZoom: 19,
+      className: 'dark-tiles'
     });
 
     const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 19,
+      maxZoom: 22,
+      maxNativeZoom: 17,
       attribution: 'Tiles &copy; Esri'
     });
 
     const map = L.map('map', {
-        layers: [osmLayer], // Börja med skogstemat
-        zoomControl: false // Ta bort zoom-knappar för renare mobil-look
+        layers: [osmLayer],
+        zoomControl: false,
+        maxZoom: 22
     }).fitWorld();
 
-    let currentMode = 'forest'; // 'forest' eller 'satellite'
+    let currentMode = 'forest';
 
     function toggleMapMode() {
         const btn = document.getElementById('btn-map-mode');
@@ -148,10 +150,8 @@
         }
     }
 
-    // Centrera på användaren
     map.locate({setView: true, maxZoom: 16});
 
-    // --- Samma logik som tidigare ---
     let allTrails = JSON.parse(localStorage.getItem('skogsspar_trails')) || [];
     let currentPathCoords = []; 
     let currentPolylineElements = [];
@@ -187,7 +187,7 @@
     function stopMapping() {
       isPaused = true;
       if(currentPathCoords.length < 2) {
-        alert("För kort.");
+        alert("Stigen är för kort.");
         resetMappingState();
         return;
       }
@@ -210,7 +210,7 @@
       }
       map.setView([lat, lon]);
 
-      // Deduplicering
+      // Deduplicering (3 meter)
       const pt = turf.point([lon, lat]);
       for (let trail of allTrails) {
         if(trail.coords.length < 2) continue;
@@ -263,9 +263,11 @@
       currentPolylineElements.forEach(p => map.removeLayer(p));
       currentPolylineElements = [];
       document.getElementById('btn-start').disabled = false;
+      document.getElementById('btn-start').innerText = "Starta";
       document.getElementById('btn-pause').disabled = true;
       document.getElementById('btn-stop').disabled = true;
       document.getElementById('speed').innerText = "0";
+      document.getElementById('status').innerText = "Redo";
     }
 
     function exportTrails() {
@@ -290,7 +292,10 @@
       return "#"+((1 << 24) + (R << 16) + (G << 8) + B).toString(16).slice(1);
     }
 
-    function handleError(e) { console.warn(e); }
+    function handleError(e) { 
+      console.warn(e); 
+      document.getElementById('status').innerText = "GPS fel. Kolla behörigheter.";
+    }
   </script>
 </body>
 </html>
