@@ -67,6 +67,19 @@
     button.stop { background-color: var(--danger-color); color: #000; }
     button.mode-toggle { background-color: #1e3323; border: 1px solid var(--accent-color); }
 
+    /* Röd knapp för popupen */
+    .delete-popup-btn {
+      background-color: var(--danger-color);
+      color: black;
+      border: none;
+      padding: 6px 10px;
+      margin-top: 8px;
+      border-radius: 4px;
+      font-weight: bold;
+      cursor: pointer;
+      width: 100%;
+    }
+
     #save-modal {
       display: none; position: absolute; top: 50%; left: 50%;
       transform: translate(-50%, -50%); z-index: 2000;
@@ -129,37 +142,25 @@
     if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
 
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 22,
-      maxNativeZoom: 19,
-      className: 'dark-tiles'
+      maxZoom: 22, maxNativeZoom: 19, className: 'dark-tiles'
     });
 
     const satelliteLayer = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 22,
-      maxNativeZoom: 17,
-      attribution: 'Tiles &copy; Esri'
+      maxZoom: 22, maxNativeZoom: 17, attribution: 'Tiles &copy; Esri'
     });
 
-    const map = L.map('map', {
-        layers: [osmLayer],
-        zoomControl: false,
-        maxZoom: 22
-    }).fitWorld();
+    const map = L.map('map', { layers: [osmLayer], zoomControl: false, maxZoom: 22 }).fitWorld();
 
     let currentMode = 'forest';
 
     function toggleMapMode() {
         const btn = document.getElementById('btn-map-mode');
         if (currentMode === 'forest') {
-            map.removeLayer(osmLayer);
-            map.addLayer(satelliteLayer);
-            currentMode = 'satellite';
-            btn.innerText = "🌲 Skogstema";
+            map.removeLayer(osmLayer); map.addLayer(satelliteLayer);
+            currentMode = 'satellite'; btn.innerText = "🌲 Skogstema";
         } else {
-            map.removeLayer(satelliteLayer);
-            map.addLayer(osmLayer);
-            currentMode = 'forest';
-            btn.innerText = "🛰️ Satellit";
+            map.removeLayer(satelliteLayer); map.addLayer(osmLayer);
+            currentMode = 'forest'; btn.innerText = "🛰️ Satellit";
         }
     }
 
@@ -169,6 +170,10 @@
     let watchId = null;
     let isPaused = false;
     let currentUserMarker = null;
+    
+    // Variabler för den avancerade vändnings- och tillbakagångsdetekteringen
+    let isMovingBackwards = false;
+    let uturnIndex = -1; 
 
     renderAllTrails();
     updateNearestTrailText(null);
@@ -176,20 +181,19 @@
     function initGPS() {
       if (navigator.geolocation) {
         navigator.geolocation.watchPosition(updatePosition, handleError, {
-          enableHighAccuracy: true,
-          maximumAge: 0,
-          timeout: 10000
+          enableHighAccuracy: true, maximumAge: 0, timeout: 10000
         });
       } else {
         document.getElementById('status').innerText = "GPS stöds inte.";
       }
     }
-    
     initGPS();
 
     function startMapping() {
       if(watchId) return; 
       isPaused = false;
+      isMovingBackwards = false;
+      uturnIndex = -1;
       document.getElementById('btn-start').disabled = true;
       document.getElementById('btn-pause').disabled = false;
       document.getElementById('btn-stop').disabled = false;
@@ -235,19 +239,66 @@
       if (!watchId || isPaused) return;
 
       const pt = turf.point([lon, lat]);
-      let isTooClose = false;
+
+      // Global deduplicering mot ALLA ANDRA färdiga stigar (3 meter)
+      let isTooCloseToOther = false;
       for (let trail of allTrails) {
         if(trail.coords.length < 2) continue;
         const line = turf.lineString(trail.coords.map(c => [c[1], c[0]]));
         if (turf.pointToLineDistance(pt, line, {units: 'meters'}) < 3) {
-          isTooClose = true;
+          isTooCloseToOther = true;
           break;
         }
       }
-      
-      if (isTooClose) {
+      if (isTooCloseToOther) {
         document.getElementById('status').innerText = "Nära befintlig stig...";
         return;
+      }
+
+      // --- AVANCERAD DEDUPLICERING: Vändningar (U-turns) på aktiv stig ---
+      if (currentPathCoords.length > 4) {
+        // Skapa en linje av det vi hittills har spelat in (exkluderat de allra sista punkterna)
+        const activeLineCoords = currentPathCoords.slice(0, -3).map(c => [c[1], c[0]]);
+        const activeLine = turf.lineString(activeLineCoords);
+        
+        // Kolla om vår nuvarande position krockar med spåret vi nyss lade bakom oss
+        const distToOwnTrack = turf.pointToLineDistance(pt, activeLine, {units: 'meters'});
+
+        if (distToOwnTrack < 4) { 
+          // Vi rör oss bakåt längs vår egen väg!
+          if (!isMovingBackwards) {
+            isMovingBackwards = true;
+            uturnIndex = currentPathCoords.length - 1; // Kom ihåg exakt vart vi vände om
+            document.getElementById('status').innerText = "Vändning upptäckt!";
+          }
+          return; // Spara inte punkter så länge vi åker bakåt
+        } else {
+          // Om vi har rört oss bakåt men nu INTE längre är nära det gamla spåret = Vi har svängt av!
+          if (isMovingBackwards) {
+            document.getElementById('status').innerText = "Svängt av! Startar ny del.";
+            
+            // 1. Klipp av den första stigen vid vändpunkten och spara den direkt i minnet
+            const firstHalfCoords = currentPathCoords.slice(0, uturnIndex);
+            if (firstHalfCoords.length >= 2) {
+              allTrails.push({
+                name: (document.getElementById('trail-name').value || "Ny stig") + " (Del 1)",
+                color: "#4ade80",
+                coords: firstHalfCoords
+              });
+              snapTrails();
+              localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+            }
+
+            // 2. Starta om den pågående inspelningen automatiskt för den nya svängen
+            currentPathCoords = [];
+            currentPolylineElements.forEach(p => map.removeLayer(p));
+            currentPolylineElements = [];
+            isMovingBackwards = false;
+            uturnIndex = -1;
+            
+            renderAllTrails();
+          }
+        }
       }
 
       document.getElementById('status').innerText = "Spelar in...";
@@ -261,144 +312,132 @@
       }
     }
 
-    // --- NY: Magnet-funktion för att dra ihop stigar ---
     function snapTrails() {
       let modified = false;
       for (let i = 0; i < allTrails.length; i++) {
-        let t1 = allTrails[i];
-        if (t1.coords.length < 2) continue;
-
+        let t1 = allTrails[i]; if (t1.coords.length < 2) continue;
         let startPt = turf.point([t1.coords[0][1], t1.coords[0][0]]);
         let endPt = turf.point([t1.coords[t1.coords.length - 1][1], t1.coords[t1.coords.length - 1][0]]);
 
         for (let j = 0; j < allTrails.length; j++) {
           if (i === j) continue;
-          let t2 = allTrails[j];
-          if (t2.coords.length < 2) continue;
-
+          let t2 = allTrails[j]; if (t2.coords.length < 2) continue;
           let line2 = turf.lineString(t2.coords.map(c => [c[1], c[0]]));
 
-          // Kollar Startpunkt inom 3 meter
           let distStart = turf.pointToLineDistance(startPt, line2, {units: 'meters'});
           if (distStart > 0 && distStart <= 3) {
             let snapped = turf.nearestPointOnLine(line2, startPt);
-            t1.coords[0][0] = snapped.geometry.coordinates[1]; // lat
-            t1.coords[0][1] = snapped.geometry.coordinates[0]; // lon
+            t1.coords[0][0] = snapped.geometry.coordinates[1]; t1.coords[0][1] = snapped.geometry.coordinates[0];
             modified = true;
           }
-
-          // Kollar Slutpunkt inom 3 meter
           let distEnd = turf.pointToLineDistance(endPt, line2, {units: 'meters'});
           if (distEnd > 0 && distEnd <= 3) {
             let snapped = turf.nearestPointOnLine(line2, endPt);
-            t1.coords[t1.coords.length - 1][0] = snapped.geometry.coordinates[1]; // lat
-            t1.coords[t1.coords.length - 1][1] = snapped.geometry.coordinates[0]; // lon
+            t1.coords[t1.coords.length - 1][0] = snapped.geometry.coordinates[1]; t1.coords[t1.coords.length - 1][1] = snapped.geometry.coordinates[0];
             modified = true;
           }
         }
       }
-      
-      if (modified) {
+      if (modified) localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+    }
+
+    // --- NY FUNKTION: Radera en specifik stig baserat på index ---
+    function deleteTrail(index) {
+      if (confirm(`Vill du ta bort stigen: "${allTrails[index].name}"?`)) {
+        allTrails.splice(index, 1);
         localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+        renderAllTrails();
       }
     }
 
     function checkNearestTrail(currentLat, currentLon) {
-      if (allTrails.length === 0) {
-        updateNearestTrailText(null);
-        return;
-      }
-
+      if (allTrails.length === 0) { updateNearestTrailText(null); return; }
       const currentPt = turf.point([currentLon, currentLat]);
-      let closestTrail = null;
-      let minDistance = 100; 
+      let closestTrail = null; let minDistance = 100; 
 
       allTrails.forEach(trail => {
         if(trail.coords.length < 2) return;
         const line = turf.lineString(trail.coords.map(c => [c[1], c[0]]));
         const distance = turf.pointToLineDistance(currentPt, line, {units: 'meters'});
-        
-        if (distance <= minDistance) {
-          minDistance = distance;
-          closestTrail = trail;
-        }
+        if (distance <= minDistance) { minDistance = distance; closestTrail = trail; }
       });
-
       updateNearestTrailText(closestTrail);
     }
 
     function updateNearestTrailText(trail) {
       const element = document.getElementById('nearest-trail');
-      if (trail) {
-        element.innerText = trail.name;
-        element.style.color = trail.color;
-      } else {
-        element.innerText = "Ingen stig nära";
-        element.style.color = "#a1a1aa";
-      }
+      if (trail) { element.innerText = trail.name; element.style.color = trail.color; } 
+      else { element.innerText = "Ingen stig nära"; element.style.color = "#a1a1aa"; }
     }
 
     function saveTrail() {
       const name = document.getElementById('trail-name').value || "Ny stig";
       const color = document.getElementById('trail-color').value;
-      allTrails.push({ name, color, coords: currentPathCoords });
       
-      snapTrails(); // Kör magnet-funktionen
-      
-      localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+      // Om vi slutade mitt i en vändning, klipp bort det felaktiga spåret bakåt
+      if (isMovingBackwards && uturnIndex !== -1) {
+        currentPathCoords = currentPathCoords.slice(0, uturnIndex);
+      }
+
+      if (currentPathCoords.length >= 2) {
+        allTrails.push({ name, color, coords: currentPathCoords });
+        snapTrails();
+        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+      }
+
       document.getElementById('save-modal').style.display = 'none';
       resetMappingState();
       renderAllTrails();
     }
 
     function renderAllTrails() {
-      // 1. Hitta global max- och min-altitud för konsistent ljusstyrka på ALLA stigar
-      let globalMinAlt = 0; // Fixerar 0m som standardbotten
-      let globalMaxAlt = 10; // Om allt är platt, antag 10m som högsta
+      let globalMinAlt = 0; let globalMaxAlt = 10;
       allTrails.forEach(trail => {
         trail.coords.forEach(c => {
           if (c[2] > globalMaxAlt) globalMaxAlt = c[2];
-          if (c[2] < globalMinAlt) globalMinAlt = c[2]; // Kan gå under 0 om du är under havsytan
+          if (c[2] < globalMinAlt) globalMinAlt = c[2];
         });
       });
 
-      // Rensa gamla ritningar
       map.eachLayer((layer) => { 
-        if (layer instanceof L.Polyline && layer !== currentUserMarker && !layer.options.isRecording) {
-            map.removeLayer(layer); 
-        }
-        if (layer.options && layer.options.isIntersection) {
-            map.removeLayer(layer);
-        }
+        if (layer instanceof L.Polyline && layer !== currentUserMarker && !layer.options.isRecording) map.removeLayer(layer); 
+        if (layer.options && layer.options.isIntersection) map.removeLayer(layer);
       });
 
-      // 2. Rita Mörk Kant (Outline) bakom alla stigar
+      // 1. Mörk Kant
       allTrails.forEach(trail => {
         if (trail.coords.length < 2) return;
         L.polyline(trail.coords.map(c => [c[0], c[1]]), {
-          color: shadeColor(trail.color, -50), // Gör kanten 50% mörkare än vald färg
-          weight: 8, // Tjockare kant
-          lineCap: 'round',
-          lineJoin: 'round'
+          color: shadeColor(trail.color, -50), weight: 8, lineCap: 'round', lineJoin: 'round'
         }).addTo(map);
       });
 
-      // 3. Rita Själva Stigen (Global Altitud Färg) ovanpå
-      allTrails.forEach(trail => {
+      // 2. Själva stigen + Popup med raderingsknapp
+      allTrails.forEach((trail, index) => {
+        // Skapa en osynlig/sammanhållen linje ovanpå för att fästa popupen på hela stigen
+        const fullPath = L.polyline(trail.coords.map(c => [c[0], c[1]]), {
+          opacity: 0, weight: 10
+        });
+
+        // Popup-HTML med knapp som anropar deleteTrail(index)
+        const popupContent = `
+          <div style="text-align:center; font-family:sans-serif;">
+            <b>${trail.name}</b><br>
+            <button class="delete-popup-btn" onclick="deleteTrail(${index})">🗑️ Ta bort stig</button>
+          </div>
+        `;
+        fullPath.bindPopup(popupContent).addTo(map);
+
+        // Rita de färgade segmenten baserat på global höjd
         for (let i = 0; i < trail.coords.length - 1; i++) {
           const p1 = trail.coords[i]; const p2 = trail.coords[i+1];
           const alt = (p1[2] + p2[2]) / 2;
-          
-          // Räkna ut ljusstyrkan baserat på den GLOBALA höjden
           let ratio = (alt - globalMinAlt) / (globalMaxAlt - globalMinAlt);
-          ratio = Math.max(0, Math.min(1, ratio)); // Håll mellan 0 och 1
+          ratio = Math.max(0, Math.min(1, ratio));
 
           L.polyline([[p1[0], p1[1]], [p2[0], p2[1]]], {
-            color: shadeColor(trail.color, (ratio - 0.5) * 80), // Ändra färgstyrkan upp till 80%
-            weight: 4, // Tunnare för att visa kanten bakom
-            lineCap: 'round',
-            lineJoin: 'round'
-          }).bindPopup(trail.name).addTo(map);
+            color: shadeColor(trail.color, (ratio - 0.5) * 80), weight: 4, lineCap: 'round', lineJoin: 'round'
+          }).addTo(map);
         }
       });
 
@@ -407,7 +446,6 @@
 
     function renderIntersections() {
       let intersectionPoints = [];
-
       function addIntersectionMarker(lat, lon, name1, name2) {
         let pt = turf.point([lon, lat]);
         for(let existing of intersectionPoints) {
@@ -416,56 +454,38 @@
         intersectionPoints.push({pt: pt});
 
         L.circleMarker([lat, lon], {
-          color: '#fff',
-          fillColor: '#f59e0b', 
-          fillOpacity: 1,
-          radius: 7,
-          weight: 2,
-          isIntersection: true 
+          color: '#fff', fillColor: '#f59e0b', fillOpacity: 1, radius: 7, weight: 2, isIntersection: true 
         }).bindPopup(`<div style="text-align:center;"><b>Korsning</b><br>${name1} ⇌ ${name2}</div>`).addTo(map);
       }
 
       for (let i = 0; i < allTrails.length; i++) {
         for (let j = i + 1; j < allTrails.length; j++) {
-          let t1 = allTrails[i];
-          let t2 = allTrails[j];
+          let t1 = allTrails[i]; let t2 = allTrails[j];
           if (t1.coords.length < 2 || t2.coords.length < 2) continue;
-
           let line1 = turf.lineString(t1.coords.map(c => [c[1], c[0]]));
           let line2 = turf.lineString(t2.coords.map(c => [c[1], c[0]]));
 
           let intersects = turf.lineIntersect(line1, line2);
           intersects.features.forEach(pt => {
-            let coords = pt.geometry.coordinates;
-            addIntersectionMarker(coords[1], coords[0], t1.name, t2.name);
+            let coords = pt.geometry.coordinates; addIntersectionMarker(coords[1], coords[0], t1.name, t2.name);
           });
 
-          // Eftersom vi nu snappar stigar till varandra räcker en väldigt liten distans för att hitta var de möts (0.5m)
           let t1Start = turf.point([t1.coords[0][1], t1.coords[0][0]]);
           let t1End = turf.point([t1.coords[t1.coords.length-1][1], t1.coords[t1.coords.length-1][0]]);
-          
-          if (turf.pointToLineDistance(t1Start, line2, {units: 'meters'}) < 0.5) {
-            addIntersectionMarker(t1.coords[0][0], t1.coords[0][1], t1.name, t2.name);
-          }
-          if (turf.pointToLineDistance(t1End, line2, {units: 'meters'}) < 0.5) {
-            addIntersectionMarker(t1.coords[t1.coords.length-1][0], t1.coords[t1.coords.length-1][1], t1.name, t2.name);
-          }
+          if (turf.pointToLineDistance(t1Start, line2, {units: 'meters'}) < 0.5) addIntersectionMarker(t1.coords[0][0], t1.coords[0][1], t1.name, t2.name);
+          if (turf.pointToLineDistance(t1End, line2, {units: 'meters'}) < 0.5) addIntersectionMarker(t1.coords[t1.coords.length-1][0], t1.coords[t1.coords.length-1][1], t1.name, t2.name);
           
           let t2Start = turf.point([t2.coords[0][1], t2.coords[0][0]]);
           let t2End = turf.point([t2.coords[t2.coords.length-1][1], t2.coords[t2.coords.length-1][0]]);
-          
-          if (turf.pointToLineDistance(t2Start, line1, {units: 'meters'}) < 0.5) {
-            addIntersectionMarker(t2.coords[0][0], t2.coords[0][1], t2.name, t1.name);
-          }
-          if (turf.pointToLineDistance(t2End, line1, {units: 'meters'}) < 0.5) {
-            addIntersectionMarker(t2.coords[t2.coords.length-1][0], t2.coords[t2.coords.length-1][1], t2.name, t1.name);
-          }
+          if (turf.pointToLineDistance(t2Start, line1, {units: 'meters'}) < 0.5) addIntersectionMarker(t2.coords[0][0], t2.coords[0][1], t2.name, t1.name);
+          if (turf.pointToLineDistance(t2End, line1, {units: 'meters'}) < 0.5) addIntersectionMarker(t2.coords[t2.coords.length-1][0], t2.coords[t2.coords.length-1][1], t2.name, t1.name);
         }
       }
     }
 
     function resetMappingState() {
-      watchId = null; isPaused = false; currentPathCoords = [];
+      watchId = null; isPaused = false; isMovingBackwards = false; uturnIndex = -1;
+      currentPathCoords = [];
       currentPolylineElements.forEach(p => map.removeLayer(p));
       currentPolylineElements = [];
       document.getElementById('btn-start').disabled = false;
@@ -485,9 +505,7 @@
       const reader = new FileReader();
       reader.onload = (e) => { 
         allTrails = allTrails.concat(JSON.parse(e.target.result)); 
-        snapTrails(); // Kör magnet-funktionen direkt vid import också!
-        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails)); 
-        renderAllTrails(); 
+        snapTrails(); localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails)); renderAllTrails(); 
       };
       reader.readAsText(event.target.files[0]);
     }
@@ -499,10 +517,7 @@
       return "#"+((1 << 24) + (R << 16) + (G << 8) + B).toString(16).slice(1);
     }
 
-    function handleError(e) { 
-      console.warn(e); 
-      document.getElementById('status').innerText = "GPS kräver HTTPS/behörighet.";
-    }
+    function handleError(e) { console.warn(e); document.getElementById('status').innerText = "GPS kräver HTTPS/behörighet."; }
   </script>
 </body>
 </html>
