@@ -16,6 +16,7 @@
       --danger-color: #f87171;
       --warning-color: #f59e0b;
       --link-color: #3b82f6;
+      --split-color: #8b5cf6;
     }
     
     body, html {
@@ -48,8 +49,7 @@
     .speedometer { font-size: 24px; font-weight: bold; color: var(--accent-color); }
     
     .nearest-trail-text {
-      font-weight: bold;
-      font-size: 16px;
+      font-weight: bold; font-size: 16px;
       text-shadow: -1px -1px 0 #fff, 1px -1px 0 #fff, -1px 1px 0 #fff, 1px 1px 0 #fff;
       color: #000;
     }
@@ -65,6 +65,7 @@
     button.stop { background-color: var(--danger-color); color: #000; }
     button.mode-toggle { background-color: #1e3323; border: 1px solid var(--accent-color); padding: 8px 12px; }
     button.small-btn { padding: 8px 12px; }
+    button.merge-btn { background-color: var(--link-color); color: white; border: 1px solid #fff; }
 
     .popup-btn {
       color: black; border: none; padding: 6px 10px; margin-top: 6px; 
@@ -73,6 +74,7 @@
     .delete-btn { background-color: var(--danger-color); }
     .edit-btn { background-color: var(--warning-color); }
     .link-btn { background-color: var(--link-color); color: white; }
+    .split-btn { background-color: var(--split-color); color: white; }
 
     #save-modal {
       display: none; position: absolute; top: 50%; left: 50%;
@@ -93,8 +95,7 @@
 
     .app-version {
       position: absolute; bottom: 2px; right: 8px; z-index: 1010;
-      font-size: 10px; color: var(--text-color); opacity: 0.4;
-      pointer-events: none; user-select: none;
+      font-size: 10px; color: var(--text-color); opacity: 0.4; pointer-events: none;
     }
 
     .waypoint-trail-list {
@@ -107,11 +108,12 @@
 <body>
 
   <div id="map"></div>
-  <div class="app-version">v1.6.0</div>
+  <div class="app-version">v1.7.0</div>
 
   <div class="top-bar">
     <button class="mode-toggle" onclick="toggleMapMode()" id="btn-map-mode">🛰️ Satellit</button>
     <div class="top-bar-right">
+        <button class="small-btn merge-btn" onclick="toggleMergeMode()" id="btn-merge-mode">🔗 Sätt ihop</button>
         <button class="small-btn" onclick="addWaypoint()">📍 Korsning</button>
         <button class="small-btn" onclick="exportTrails()">Exportera</button>
         <button class="small-btn" onclick="document.getElementById('file-input').click()">Importera</button>
@@ -169,7 +171,6 @@
         }
     }
 
-    // Laddar data och ser till att gamla stigar/korsningar uppgraderas med ID och listor
     let allTrails = JSON.parse(localStorage.getItem('skogsspar_trails')) || [];
     allTrails.forEach(t => { if (!t.id) t.id = 't_' + Math.random().toString(36).substr(2, 9); });
     
@@ -186,6 +187,12 @@
     let savingCurrentIndex = 0;
     let editingTrailIndex = null;
 
+    // Variabler för interaktion
+    let activeWaypointIndex = null;
+    let waypointMarkers = {}; 
+    let isMerging = false;
+    let mergeSelection = [];
+
     renderAllTrails();
     updateNearestTrailText(null);
 
@@ -194,8 +201,6 @@
         navigator.geolocation.watchPosition(updatePosition, handleError, {
           enableHighAccuracy: true, maximumAge: 0, timeout: 10000
         });
-      } else {
-        document.getElementById('status').innerText = "GPS stöds inte.";
       }
     }
     initGPS();
@@ -220,19 +225,13 @@
 
     function stopMapping() {
       isPaused = true;
-      if(currentPathCoords.length < 2) {
-        alert("Stigen är för kort.");
-        resetMappingState();
-        return;
-      }
+      if(currentPathCoords.length < 2) { alert("Stigen är för kort."); resetMappingState(); return; }
       processAndOpenSaveFlow();
     }
 
     function updatePosition(position) {
-      const lat = position.coords.latitude;
-      const lon = position.coords.longitude;
-      const alt = position.coords.altitude || 0;
-      let speed = position.coords.speed || 0; 
+      const lat = position.coords.latitude; const lon = position.coords.longitude;
+      const alt = position.coords.altitude || 0; let speed = position.coords.speed || 0; 
       
       document.getElementById('speed').innerText = speed > 0 ? (speed * 3.6).toFixed(1) : "0";
 
@@ -242,89 +241,55 @@
       } else {
         currentUserMarker.setLatLng([lat, lon]);
       }
-
       checkNearestTrail(lat, lon);
 
       if (!watchId || isPaused) return;
 
       if (currentPathCoords.length > 0) {
         const lastPt = currentPathCoords[currentPathCoords.length - 1];
-        const dist = turf.distance(
-          turf.point([lastPt[1], lastPt[0]]), 
-          turf.point([lon, lat]), 
-          {units: 'meters'}
-        );
-        if (dist < 1) return; 
+        if (turf.distance(turf.point([lastPt[1], lastPt[0]]), turf.point([lon, lat]), {units: 'meters'}) < 1) return; 
       }
-
       document.getElementById('status').innerText = "Spelar in...";
       currentPathCoords.push([lat, lon, alt]);
 
       if (currentPathCoords.length > 1) {
-        const p = L.polyline([currentPathCoords[currentPathCoords.length-2], [lat, lon]], {
+        currentPolylineElements.push(L.polyline([currentPathCoords[currentPathCoords.length-2], [lat, lon]], {
           color: '#ffffff', weight: 4, opacity: 0.8, dashArray: '5, 10', isRecording: true
-        }).addTo(map);
-        currentPolylineElements.push(p);
+        }).addTo(map));
       }
     }
 
     function processAndOpenSaveFlow() {
-      let segments = [];
-      let currentSegment = [];
-      let isBacktracking = false;
-      let lastBacktrackIndex = 0;
+      let segments = []; let currentSegment = []; let isBacktracking = false; let lastBacktrackIndex = 0;
 
       for (let i = 0; i < currentPathCoords.length; i++) {
         let pt = turf.point([currentPathCoords[i][1], currentPathCoords[i][0]]);
-        
         let isOverlappingOther = false;
         for (let trail of allTrails) {
           if (trail.coords.length < 2) continue;
-          let otherLine = turf.lineString(trail.coords.map(c => [c[1], c[0]]));
-          if (turf.pointToLineDistance(pt, otherLine, {units: 'meters'}) <= 8) { 
-            isOverlappingOther = true;
-            break;
+          if (turf.pointToLineDistance(pt, turf.lineString(trail.coords.map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) { 
+            isOverlappingOther = true; break;
           }
         }
-
         let isBacktrackingOwn = false;
         if (currentSegment.length > 5) {
-          let historyLine = turf.lineString(currentSegment.slice(0, -4).map(c => [c[1], c[0]]));
-          if (turf.pointToLineDistance(pt, historyLine, {units: 'meters'}) <= 8) {
+          if (turf.pointToLineDistance(pt, turf.lineString(currentSegment.slice(0, -4).map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) {
             isBacktrackingOwn = true;
           }
         }
-
         if (isOverlappingOther || isBacktrackingOwn) {
-          if (isBacktrackingOwn) {
-            isBacktracking = true;
-            lastBacktrackIndex = i;
-          }
-          if (currentSegment.length >= 2) {
-            segments.push(currentSegment);
-          }
+          if (isBacktrackingOwn) { isBacktracking = true; lastBacktrackIndex = i; }
+          if (currentSegment.length >= 2) segments.push(currentSegment);
           currentSegment = []; 
         } else {
-          if (isBacktracking) {
-            currentSegment.push(currentPathCoords[lastBacktrackIndex]);
-            isBacktracking = false;
-          }
+          if (isBacktracking) { currentSegment.push(currentPathCoords[lastBacktrackIndex]); isBacktracking = false; }
           currentSegment.push(currentPathCoords[i]);
         }
       }
-
       if (currentSegment.length >= 2) segments.push(currentSegment);
+      if (segments.length === 0) { alert("Hela spåret rensades (överlapp)."); resetMappingState(); return; }
 
-      if (segments.length === 0) {
-        alert("Hela spåret rensades eftersom du bara gick på redan sparade stigar eller vände om helt.");
-        resetMappingState();
-        return;
-      }
-
-      savingSegments = segments;
-      savingCurrentIndex = 0;
-      editingTrailIndex = null;
-      openSaveModal();
+      savingSegments = segments; savingCurrentIndex = 0; editingTrailIndex = null; openSaveModal();
     }
 
     function openSaveModal() {
@@ -346,76 +311,29 @@
       const color = document.getElementById('trail-color').value;
 
       if (editingTrailIndex !== null) {
-        allTrails[editingTrailIndex].name = name;
-        allTrails[editingTrailIndex].color = color;
+        allTrails[editingTrailIndex].name = name; allTrails[editingTrailIndex].color = color;
         editingTrailIndex = null;
       } else {
-        allTrails.push({
-          id: 't_' + Math.random().toString(36).substr(2, 9),
-          name: name,
-          color: color,
-          coords: savingSegments[savingCurrentIndex]
-        });
-
+        allTrails.push({ id: 't_' + Math.random().toString(36).substr(2, 9), name: name, color: color, coords: savingSegments[savingCurrentIndex] });
         savingCurrentIndex++;
-        if (savingCurrentIndex < savingSegments.length) {
-          openSaveModal();
-          return;
-        }
+        if (savingCurrentIndex < savingSegments.length) { openSaveModal(); return; }
       }
-
-      snapTrails();
-      generateAutoIntersections(); // Hitta nya korsningar och spara dem!
+      generateAutoIntersections(); 
       localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
       document.getElementById('save-modal').style.display = 'none';
-      resetMappingState();
-      renderAllTrails();
+      resetMappingState(); renderAllTrails();
     }
 
-    function editTrail(index) {
-      editingTrailIndex = index;
-      map.closePopup();
-      openSaveModal();
-    }
+    function editTrail(index) { editingTrailIndex = index; map.closePopup(); openSaveModal(); }
 
     function deleteTrail(index) {
       if (confirm(`Vill du ta bort stigen: "${allTrails[index].name}"?`)) {
         allTrails.splice(index, 1);
-        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
-        renderAllTrails();
+        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails)); renderAllTrails();
       }
     }
 
-    function snapTrails() {
-      let modified = false;
-      for (let i = 0; i < allTrails.length; i++) {
-        let t1 = allTrails[i]; if (t1.coords.length < 2) continue;
-        let startPt = turf.point([t1.coords[0][1], t1.coords[0][0]]);
-        let endPt = turf.point([t1.coords[t1.coords.length - 1][1], t1.coords[t1.coords.length - 1][0]]);
-
-        for (let j = 0; j < allTrails.length; j++) {
-          if (i === j) continue;
-          let t2 = allTrails[j]; if (t2.coords.length < 2) continue;
-          let line2 = turf.lineString(t2.coords.map(c => [c[1], c[0]]));
-
-          let distStart = turf.pointToLineDistance(startPt, line2, {units: 'meters'});
-          if (distStart > 0 && distStart <= 8) { 
-            let snapped = turf.nearestPointOnLine(line2, startPt);
-            t1.coords[0][0] = snapped.geometry.coordinates[1]; t1.coords[0][1] = snapped.geometry.coordinates[0];
-            modified = true;
-          }
-          let distEnd = turf.pointToLineDistance(endPt, line2, {units: 'meters'});
-          if (distEnd > 0 && distEnd <= 8) { 
-            let snapped = turf.nearestPointOnLine(line2, endPt);
-            t1.coords[t1.coords.length - 1][0] = snapped.geometry.coordinates[1]; t1.coords[t1.coords.length - 1][1] = snapped.geometry.coordinates[0];
-            modified = true;
-          }
-        }
-      }
-      if (modified) localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
-    }
-
-    // --- NYTT SYSTEM FÖR KORSNINGAR (WAYPOINTS) ---
+    // --- KORSNINGAR (WAYPOINTS) ---
 
     function generateAutoIntersections() {
       let wpModified = false;
@@ -423,10 +341,7 @@
         for (let j = i + 1; j < allTrails.length; j++) {
           let t1 = allTrails[i]; let t2 = allTrails[j];
           if (t1.coords.length < 2 || t2.coords.length < 2) continue;
-          let line1 = turf.lineString(t1.coords.map(c => [c[1], c[0]]));
-          let line2 = turf.lineString(t2.coords.map(c => [c[1], c[0]]));
-
-          let intersects = turf.lineIntersect(line1, line2);
+          let intersects = turf.lineIntersect(turf.lineString(t1.coords.map(c => [c[1], c[0]])), turf.lineString(t2.coords.map(c => [c[1], c[0]])));
           intersects.features.forEach(pt => {
             let coords = pt.geometry.coordinates; 
             wpModified = addAutoWaypoint(coords[1], coords[0], t1, t2) || wpModified;
@@ -438,7 +353,6 @@
 
     function addAutoWaypoint(lat, lng, t1, t2) {
       let pt = turf.point([lng, lat]);
-      // Finns det redan en waypoint i närheten?
       for (let wp of waypoints) {
         if (turf.distance(pt, turf.point([wp.lng, wp.lat]), {units: 'meters'}) < 10) {
           let updated = false;
@@ -447,104 +361,207 @@
           return updated;
         }
       }
-      // Annars skapa en ny
-      waypoints.push({
-        lat: lat, lng: lng, 
-        name: "Korsning", 
-        connectedTrails: [t1.id, t2.id]
-      });
+      waypoints.push({ lat: lat, lng: lng, name: "Korsning", connectedTrails: [t1.id, t2.id] });
       return true;
     }
 
     function addWaypoint() {
       const center = map.getCenter();
       waypoints.push({ lat: center.lat, lng: center.lng, name: "Ny korsning", connectedTrails: [] });
-      saveWaypoints();
-      renderAllTrails();
+      saveWaypoints(); renderAllTrails();
     }
 
-    function saveWaypoints() {
-      localStorage.setItem('skogsspar_waypoints', JSON.stringify(waypoints));
-    }
+    function saveWaypoints() { localStorage.setItem('skogsspar_waypoints', JSON.stringify(waypoints)); }
+    function deleteWaypoint(index) { waypoints.splice(index, 1); saveWaypoints(); renderAllTrails(); }
+    function updateWaypointName(index, newName) { waypoints[index].name = newName; saveWaypoints(); }
 
-    function deleteWaypoint(index) {
-      waypoints.splice(index, 1);
-      saveWaypoints();
-      renderAllTrails();
-    }
-
-    function updateWaypointName(index, newName) {
-      waypoints[index].name = newName;
-      saveWaypoints();
-    }
-
-    function toggleWaypointTrail(wpIndex, trailId, isChecked) {
+    function toggleWaypointTrail(wpIndex, trailId, forceState) {
       let wp = waypoints[wpIndex];
-      if (!wp.connectedTrails) wp.connectedTrails = [];
-      if (isChecked) {
-        if (!wp.connectedTrails.includes(trailId)) wp.connectedTrails.push(trailId);
-      } else {
-        wp.connectedTrails = wp.connectedTrails.filter(id => id !== trailId);
-      }
-      saveWaypoints(); // Sparar i bakgrunden utan att stänga popupen
+      let isConnected = wp.connectedTrails.includes(trailId);
+      let newState = forceState !== undefined ? forceState : !isConnected;
+
+      if (newState && !isConnected) wp.connectedTrails.push(trailId);
+      else if (!newState && isConnected) wp.connectedTrails = wp.connectedTrails.filter(id => id !== trailId);
+      saveWaypoints();
     }
 
-    // Drar ihop alla valda stigar till waypointens mittpunkt
+    function updateWaypointPopup(index) {
+        if(waypointMarkers[index]) waypointMarkers[index].setPopupContent(getWaypointPopupHTML(index));
+    }
+
     function snapWaypointTrails(wpIndex) {
       let wp = waypoints[wpIndex];
       let wpPoint = turf.point([wp.lng, wp.lat]);
-      let modified = false;
+      let connections = [];
 
       wp.connectedTrails.forEach(trailId => {
         let trail = allTrails.find(t => t.id === trailId);
         if (trail) {
-          let minDist = Infinity;
-          let closestIdx = -1;
+          let minDist = Infinity; let closestIdx = -1;
           trail.coords.forEach((coord, i) => {
             let dist = turf.distance(wpPoint, turf.point([coord[1], coord[0]]), {units: 'meters'});
             if (dist < minDist) { minDist = dist; closestIdx = i; }
           });
-          
-          if (closestIdx !== -1) {
-            trail.coords[closestIdx][0] = wp.lat;
-            trail.coords[closestIdx][1] = wp.lng;
-            modified = true;
-          }
+          if (closestIdx !== -1) connections.push({ trail: trail, idx: closestIdx });
         }
       });
 
-      if (modified) {
-        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
-        renderAllTrails(); // Detta kommer rita om kartan och stänga popupen
-        alert("Stigarna har kopplats ihop vid korsningen!");
+      if (connections.length === 0) return alert("Välj minst en stig i listan.");
+
+      // Hitta om någon stig ansluter på en INRE punkt
+      let innerConn = connections.find(c => c.idx > 0 && c.idx < c.trail.coords.length - 1);
+      
+      if (innerConn) {
+        // Flytta korsningen TILL stigen
+        wp.lat = innerConn.trail.coords[innerConn.idx][0];
+        wp.lng = innerConn.trail.coords[innerConn.idx][1];
+        
+        // Alla andra (ändpunkter) snappar till denna nya plats
+        connections.forEach(c => {
+          if (c !== innerConn && (c.idx === 0 || c.idx === c.trail.coords.length - 1)) {
+            c.trail.coords[c.idx][0] = wp.lat; c.trail.coords[c.idx][1] = wp.lng;
+          }
+        });
       } else {
-        alert("Välj minst en stig i listan för att koppla ihop.");
+        // Bara ändpunkter inblandade, dra dem till korsningen
+        connections.forEach(c => {
+            c.trail.coords[c.idx][0] = wp.lat; c.trail.coords[c.idx][1] = wp.lng;
+        });
       }
+      saveWaypoints(); localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+      renderAllTrails(); 
     }
 
-    // ----------------------------------------------
+    function splitTrailAtWaypoint(wpIndex, trailId) {
+        let wp = waypoints[wpIndex];
+        let trail = allTrails.find(t => t.id === trailId);
+        if(!trail) return;
+        
+        let wpPoint = turf.point([wp.lng, wp.lat]);
+        let closestIdx = -1; let minDist = Infinity;
+        trail.coords.forEach((c, i) => {
+            let d = turf.distance(wpPoint, turf.point([c[1], c[0]]), {units: 'meters'});
+            if(d < minDist) { minDist = d; closestIdx = i; }
+        });
 
-    function checkNearestTrail(currentLat, currentLon) {
-      if (allTrails.length === 0) { updateNearestTrailText(null); return; }
-      const currentPt = turf.point([currentLon, currentLat]);
-      let closestTrail = null; let minDistance = 100; 
-
-      allTrails.forEach(trail => {
-        if(trail.coords.length < 2) return;
-        const line = turf.lineString(trail.coords.map(c => [c[1], c[0]]));
-        const distance = turf.pointToLineDistance(currentPt, line, {units: 'meters'});
-        if (distance <= minDistance) { minDistance = distance; closestTrail = trail; }
-      });
-      updateNearestTrailText(closestTrail);
+        if (closestIdx > 0 && closestIdx < trail.coords.length - 1) {
+            let trail1Coords = trail.coords.slice(0, closestIdx + 1);
+            let trail2Coords = trail.coords.slice(closestIdx); // Båda delar på punkten
+            
+            let newTrailId = 't_' + Math.random().toString(36).substr(2, 9);
+            allTrails.push({ id: newTrailId, name: trail.name + " (Del 2)", color: trail.color, coords: trail2Coords });
+            trail.coords = trail1Coords; // Kapar originalet
+            
+            wp.connectedTrails.push(newTrailId); // Nya delen sitter också i korsningen
+            localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
+            saveWaypoints(); renderAllTrails();
+        }
     }
 
-    function updateNearestTrailText(trail) {
-      const element = document.getElementById('nearest-trail');
-      if (trail) { element.innerText = trail.name; element.style.color = trail.color; } 
-      else { element.innerText = "Ingen stig nära"; element.style.color = "#a1a1aa"; }
+    function getWaypointPopupHTML(index) {
+        let wp = waypoints[index];
+        let innerTrailsHTML = '';
+        
+        let trailCheckboxes = allTrails.map(t => {
+            let isChecked = wp.connectedTrails.includes(t.id);
+            if(isChecked) {
+                let minDist = Infinity; let closestIdx = -1;
+                let wpPt = turf.point([wp.lng, wp.lat]);
+                t.coords.forEach((c, i) => {
+                    let d = turf.distance(wpPt, turf.point([c[1], c[0]]), {units: 'meters'});
+                    if(d < minDist) { minDist = d; closestIdx = i; }
+                });
+                // Visar knappen om den ansluter på en inre punkt nära korsningen
+                if(closestIdx > 0 && closestIdx < t.coords.length - 1 && minDist < 20) { 
+                    innerTrailsHTML += `<button class="popup-btn split-btn" onclick="splitTrailAtWaypoint(${index}, '${t.id}')">✂️ Dela ${t.name}</button>`;
+                }
+            }
+            return `<label style="display:block; cursor:pointer;"><input type="checkbox" onchange="toggleWaypointTrail(${index}, '${t.id}', this.checked); updateWaypointPopup(${index})" ${isChecked ? 'checked' : ''}> ${t.name}</label>`;
+        }).join('');
+
+        return `
+          <div style="text-align:center;">
+            <b>${wp.name}</b><br>
+            <input type="text" value="${wp.name}" onchange="updateWaypointName(${index}, this.value)" style="width:140px; text-align:center; margin: 4px 0; border: 1px solid #ccc; border-radius: 4px; padding: 4px; color: black;">
+            <div class="waypoint-trail-list">${trailCheckboxes}</div>
+            ${innerTrailsHTML}
+            <button class="popup-btn link-btn" onclick="snapWaypointTrails(${index})">🔗 Koppla ihop punkter</button>
+            <button class="popup-btn delete-btn" onclick="deleteWaypoint(${index})">🗑️ Ta bort</button>
+          </div>
+        `;
     }
+
+    // --- SÄTT IHOP STIGAR (MERGE) ---
+    function toggleMergeMode() {
+        isMerging = !isMerging;
+        const btn = document.getElementById('btn-merge-mode');
+        if(isMerging) {
+            btn.style.backgroundColor = 'var(--accent-color)'; btn.style.color = '#000';
+            btn.innerText = "Klicka på stig 1...";
+            mergeSelection = [];
+        } else {
+            btn.style.backgroundColor = 'var(--link-color)'; btn.style.color = 'white';
+            btn.innerText = "🔗 Sätt ihop";
+        }
+    }
+
+    function handleMergeClick(trailId) {
+        if(mergeSelection.length === 0) {
+            mergeSelection.push(trailId);
+            document.getElementById('btn-merge-mode').innerText = "Klicka på stig 2...";
+        } else if (mergeSelection.length === 1 && mergeSelection[0] !== trailId) {
+            mergeSelection.push(trailId); executeMerge();
+        }
+    }
+
+    function executeMerge() {
+        let t1 = allTrails.find(t => t.id === mergeSelection[0]);
+        let t2 = allTrails.find(t => t.id === mergeSelection[1]);
+        if(!t1 || !t2) return toggleMergeMode();
+
+        let len1 = turf.length(turf.lineString(t1.coords.map(c => [c[1], c[0]])));
+        let len2 = turf.length(turf.lineString(t2.coords.map(c => [c[1], c[0]])));
+        let baseTrail = len1 > len2 ? t1 : t2; // Tar namn och färg från den längsta
+
+        let e1s = t1.coords[0]; let e1e = t1.coords[t1.coords.length-1];
+        let e2s = t2.coords[0]; let e2e = t2.coords[t2.coords.length-1];
+
+        // Mät avstånd mellan alla 4 ändpunkter
+        let dists = [
+            { d: turf.distance(turf.point([e1s[1], e1s[0]]), turf.point([e2s[1], e2s[0]])), type: 'ss' },
+            { d: turf.distance(turf.point([e1s[1], e1s[0]]), turf.point([e2e[1], e2e[0]])), type: 'se' },
+            { d: turf.distance(turf.point([e1e[1], e1e[0]]), turf.point([e2s[1], e2s[0]])), type: 'es' },
+            { d: turf.distance(turf.point([e1e[1], e1e[0]]), turf.point([e2e[1], e2e[0]])), type: 'ee' }
+        ];
+        dists.sort((a,b) => a.d - b.d);
+        let best = dists[0].type;
+
+        let newCoords = [];
+        if (best === 'es') newCoords = t1.coords.concat(t2.coords);
+        else if (best === 'ee') newCoords = t1.coords.concat([...t2.coords].reverse());
+        else if (best === 'ss') newCoords = [...t1.coords].reverse().concat(t2.coords);
+        else if (best === 'se') newCoords = t2.coords.concat(t1.coords);
+
+        let newTrail = { id: 't_' + Math.random().toString(36).substr(2, 9), name: baseTrail.name, color: baseTrail.color, coords: newCoords };
+
+        allTrails = allTrails.filter(t => t.id !== t1.id && t.id !== t2.id);
+        allTrails.push(newTrail);
+
+        // Uppdatera korsningar så de refererar till den nya stigen
+        waypoints.forEach(wp => {
+            if(wp.connectedTrails.includes(t1.id) || wp.connectedTrails.includes(t2.id)) {
+                wp.connectedTrails = wp.connectedTrails.filter(id => id !== t1.id && id !== t2.id);
+                wp.connectedTrails.push(newTrail.id);
+            }
+        });
+
+        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails)); saveWaypoints();
+        toggleMergeMode(); renderAllTrails();
+    }
+
 
     function renderAllTrails() {
+      waypointMarkers = {}; 
       let globalMinAlt = 0; let globalMaxAlt = 10;
       allTrails.forEach(trail => {
         trail.coords.forEach(c => {
@@ -568,9 +585,7 @@
       });
 
       allTrails.forEach((trail, index) => {
-        const fullPath = L.polyline(trail.coords.map(c => [c[0], c[1]]), {
-          opacity: 0, weight: 10
-        });
+        const fullPath = L.polyline(trail.coords.map(c => [c[0], c[1]]), { opacity: 0, weight: 15 });
 
         const popupContent = `
           <div style="text-align:center; font-family:sans-serif; min-width: 130px;">
@@ -579,7 +594,22 @@
             <button class="popup-btn delete-btn" onclick="deleteTrail(${index})">🗑️ Ta bort stig</button>
           </div>
         `;
-        fullPath.bindPopup(popupContent).addTo(map);
+
+        fullPath.on('click', (e) => {
+            L.DomEvent.stopPropagation(e); // Hindra kartan från att stänga eventuell korsningspopup
+            
+            if (isMerging) {
+                handleMergeClick(trail.id);
+            } else if (activeWaypointIndex !== null) {
+                // Vi har en korsning öppen - klicka på stigen för att lägga till/ta bort den
+                toggleWaypointTrail(activeWaypointIndex, trail.id);
+                updateWaypointPopup(activeWaypointIndex);
+            } else {
+                // Vanligt klick: öppna stigens egen meny
+                L.popup().setLatLng(e.latlng).setContent(popupContent).openOn(map);
+            }
+        });
+        fullPath.addTo(map);
 
         for (let i = 0; i < trail.coords.length - 1; i++) {
           const p1 = trail.coords[i]; const p2 = trail.coords[i+1];
@@ -597,87 +627,72 @@
         const icon = L.divIcon({
           className: 'custom-waypoint-icon',
           html: '<div style="width:16px; height:16px; background:#f59e0b; border:2px solid #fff; border-radius:50%; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>',
-          iconSize: [20, 20],
-          iconAnchor: [10, 10]
+          iconSize: [20, 20], iconAnchor: [10, 10]
         });
 
         const marker = L.marker([wp.lat, wp.lng], { icon: icon, draggable: true }).addTo(map);
+        waypointMarkers[index] = marker;
 
-        // Skapa listan med kryssrutor för alla stigar
-        let trailCheckboxes = allTrails.map(t => {
-          let isChecked = wp.connectedTrails.includes(t.id) ? 'checked' : '';
-          return `<label><input type="checkbox" onchange="toggleWaypointTrail(${index}, '${t.id}', this.checked)" ${isChecked}> ${t.name}</label><br>`;
-        }).join('');
+        marker.bindPopup(getWaypointPopupHTML(index));
 
-        marker.bindPopup(`
-          <div style="text-align:center;">
-            <b>${wp.name}</b><br>
-            <input type="text" value="${wp.name}" onchange="updateWaypointName(${index}, this.value)" style="width:140px; text-align:center; margin: 4px 0; border: 1px solid #ccc; border-radius: 4px; padding: 4px; color: black;">
-            
-            <div class="waypoint-trail-list">
-              ${trailCheckboxes}
-            </div>
-
-            <button class="popup-btn link-btn" onclick="snapWaypointTrails(${index})">🔗 Koppla ihop</button>
-            <button class="popup-btn delete-btn" onclick="deleteWaypoint(${index})">🗑️ Ta bort</button>
-          </div>
-        `);
+        marker.on('popupopen', () => { activeWaypointIndex = index; });
+        marker.on('popupclose', () => { activeWaypointIndex = null; });
 
         marker.on('dragend', function(e) {
           const pos = e.target.getLatLng();
-          waypoints[index].lat = pos.lat;
-          waypoints[index].lng = pos.lng;
+          waypoints[index].lat = pos.lat; waypoints[index].lng = pos.lng;
           saveWaypoints();
         });
       });
     }
 
+    function checkNearestTrail(currentLat, currentLon) {
+      if (allTrails.length === 0) { updateNearestTrailText(null); return; }
+      let closestTrail = null; let minDistance = 100; 
+      allTrails.forEach(trail => {
+        if(trail.coords.length < 2) return;
+        const distance = turf.pointToLineDistance(turf.point([currentLon, currentLat]), turf.lineString(trail.coords.map(c => [c[1], c[0]])), {units: 'meters'});
+        if (distance <= minDistance) { minDistance = distance; closestTrail = trail; }
+      });
+      updateNearestTrailText(closestTrail);
+    }
+    function updateNearestTrailText(trail) {
+      const element = document.getElementById('nearest-trail');
+      if (trail) { element.innerText = trail.name; element.style.color = trail.color; } 
+      else { element.innerText = "Ingen stig nära"; element.style.color = "#a1a1aa"; }
+    }
     function resetMappingState() {
-      watchId = null; isPaused = false;
-      currentPathCoords = [];
-      currentPolylineElements.forEach(p => map.removeLayer(p));
-      currentPolylineElements = [];
-      document.getElementById('btn-start').disabled = false;
-      document.getElementById('btn-start').innerText = "Starta";
-      document.getElementById('btn-pause').disabled = true;
-      document.getElementById('btn-stop').disabled = true;
-      document.getElementById('speed').innerText = "0";
-      document.getElementById('status').innerText = "Redo";
+      watchId = null; isPaused = false; currentPathCoords = [];
+      currentPolylineElements.forEach(p => map.removeLayer(p)); currentPolylineElements = [];
+      document.getElementById('btn-start').disabled = false; document.getElementById('btn-start').innerText = "Starta";
+      document.getElementById('btn-pause').disabled = true; document.getElementById('btn-stop').disabled = true;
+      document.getElementById('speed').innerText = "0"; document.getElementById('status').innerText = "Redo";
     }
-
     function exportTrails() {
-      const exportData = { trails: allTrails, waypoints: waypoints };
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(exportData));
-      const a = document.createElement('a'); a.setAttribute("href", dataStr); a.setAttribute("download", "skogsspar_data.json"); a.click();
+      const a = document.createElement('a'); 
+      a.setAttribute("href", "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ trails: allTrails, waypoints: waypoints }))); 
+      a.setAttribute("download", "skogsspar_data.json"); a.click();
     }
-
     function importTrails(event) {
       const reader = new FileReader();
       reader.onload = (e) => { 
         const imported = JSON.parse(e.target.result);
-        if (Array.isArray(imported)) {
-          allTrails = allTrails.concat(imported); 
-        } else {
+        if (Array.isArray(imported)) allTrails = allTrails.concat(imported); 
+        else {
           if(imported.trails) allTrails = allTrails.concat(imported.trails);
           if(imported.waypoints) waypoints = waypoints.concat(imported.waypoints);
         }
         allTrails.forEach(t => { if (!t.id) t.id = 't_' + Math.random().toString(36).substr(2, 9); });
-        snapTrails(); 
-        generateAutoIntersections();
-        localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails)); 
-        saveWaypoints();
-        renderAllTrails(); 
+        generateAutoIntersections(); localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails)); 
+        saveWaypoints(); renderAllTrails(); 
       };
       reader.readAsText(event.target.files[0]);
     }
-
-    function shadeColor(color, percent) {
-      let R = parseInt(color.substring(1,3),16), G = parseInt(color.substring(3,5),16), B = parseInt(color.substring(5,7),16);
-      R = parseInt(R * (100 + percent) / 100); G = parseInt(G * (100 + percent) / 100); B = parseInt(B * (100 + percent) / 100);
-      R = (R<255)?R:255; G = (G<255)?G:255; B = (B<255)?B:255;
-      return "#"+((1 << 24) + (R << 16) + (G << 8) + B).toString(16).slice(1);
+    function shadeColor(c, p) {
+      let R = parseInt(c.substring(1,3),16), G = parseInt(c.substring(3,5),16), B = parseInt(c.substring(5,7),16);
+      R = parseInt(R * (100 + p) / 100); G = parseInt(G * (100 + p) / 100); B = parseInt(B * (100 + p) / 100);
+      return "#"+((1 << 24) + ((R<255?R:255) << 16) + ((G<255?G:255) << 8) + (B<255?B:255)).toString(16).slice(1);
     }
-
     function handleError(e) { console.warn(e); document.getElementById('status').innerText = "GPS kräver HTTPS/behörighet."; }
   </script>
 </body>
