@@ -108,20 +108,16 @@
       border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #000;
     }
 
-    /* Gör dela-knapparnas lista skrollbar om det finns fler än 2 */
     .waypoint-split-list {
-      max-height: 82px; 
-      overflow-y: auto;
-      margin: 6px 0;
-      border-top: 1px dashed #ccc;
-      padding-top: 4px;
+      max-height: 82px; overflow-y: auto; margin: 6px 0;
+      border-top: 1px dashed #ccc; padding-top: 4px;
     }
   </style>
 </head>
 <body>
 
   <div id="map"></div>
-  <div class="app-version">v1.7.1</div>
+  <div class="app-version">v1.7.2</div>
 
   <div class="top-bar">
     <div class="top-bar-left">
@@ -194,14 +190,12 @@
     let waypoints = JSON.parse(localStorage.getItem('skogsspar_waypoints')) || [];
     waypoints.forEach(wp => { if (!wp.connectedTrails) wp.connectedTrails = []; });
 
-    // --- HISTORIK (UNDO / REDO) ---
-    let undoHistory = [];
-    let redoHistory = [];
+    let undoHistory = []; let redoHistory = [];
 
     function pushState() {
       undoHistory.push(JSON.stringify({ trails: allTrails, waypoints: waypoints }));
-      if (undoHistory.length > 30) undoHistory.shift(); // Max 30 steg
-      redoHistory = []; // Töm redo vid ny handling
+      if (undoHistory.length > 30) undoHistory.shift(); 
+      redoHistory = []; 
       updateUndoRedoButtons();
     }
 
@@ -209,22 +203,16 @@
       if (undoHistory.length === 0) return;
       redoHistory.push(JSON.stringify({ trails: allTrails, waypoints: waypoints }));
       const state = JSON.parse(undoHistory.pop());
-      allTrails = state.trails;
-      waypoints = state.waypoints;
-      saveDataSilently();
-      renderAllTrails();
-      updateUndoRedoButtons();
+      allTrails = state.trails; waypoints = state.waypoints;
+      saveDataSilently(); renderAllTrails(); updateUndoRedoButtons();
     }
 
     function redo() {
       if (redoHistory.length === 0) return;
       undoHistory.push(JSON.stringify({ trails: allTrails, waypoints: waypoints }));
       const state = JSON.parse(redoHistory.pop());
-      allTrails = state.trails;
-      waypoints = state.waypoints;
-      saveDataSilently();
-      renderAllTrails();
-      updateUndoRedoButtons();
+      allTrails = state.trails; waypoints = state.waypoints;
+      saveDataSilently(); renderAllTrails(); updateUndoRedoButtons();
     }
 
     function updateUndoRedoButtons() {
@@ -237,16 +225,45 @@
       localStorage.setItem('skogsspar_waypoints', JSON.stringify(waypoints));
     }
 
+    // --- Skalningssystem för utzoomning ---
+    function getScaleFactor() {
+        let z = map.getZoom();
+        // Krymper hälften för varje nivå under zoom 15, stannar på min 0.05
+        return z >= 15 ? 1.0 : Math.max(0.05, Math.pow(2, z - 15));
+    }
+
+    function updateMapScaling() {
+        let scale = getScaleFactor();
+        let baseW = Math.max(1.5, 8 * scale);
+        let bgW = Math.max(3, 15 * scale);
+        let segW = Math.max(1, 4 * scale);
+        let mSize = Math.max(4, 14 * scale); // 14px är nu standardstorleken
+        
+        map.eachLayer((layer) => {
+            if (layer.options) {
+                if (layer.options.isTrailBg) layer.setStyle({ weight: bgW });
+                else if (layer.options.isTrailBase) layer.setStyle({ weight: baseW });
+                else if (layer.options.isTrailSeg) layer.setStyle({ weight: segW });
+                else if (layer.options.isWaypoint) {
+                    let borderW = Math.max(1, 2 * scale);
+                    let html = `<div style="width:${mSize}px; height:${mSize}px; background:#f59e0b; border:${borderW}px solid #fff; border-radius:50%; box-shadow: 0 0 3px rgba(0,0,0,0.5); box-sizing: border-box;"></div>`;
+                    layer.setIcon(L.divIcon({ className: 'custom-waypoint-icon', html: html, iconSize: [mSize, mSize], iconAnchor: [mSize/2, mSize/2] }));
+                }
+            }
+        });
+    }
+
+    // Lyssna på zoom för att justera tjocklek och storlek utan att stänga popup-rutor
+    map.on('zoomend', updateMapScaling);
+
     let currentPathCoords = []; 
     let currentPolylineElements = [];
     let watchId = null;
     let isPaused = false;
     let currentUserMarker = null;
-
     let savingSegments = [];
     let savingCurrentIndex = 0;
     let editingTrailIndex = null;
-
     let activeWaypointIndex = null;
     let waypointMarkers = {}; 
     let isMerging = false;
@@ -257,84 +274,58 @@
 
     function initGPS() {
       if (navigator.geolocation) {
-        navigator.geolocation.watchPosition(updatePosition, handleError, {
-          enableHighAccuracy: true, maximumAge: 0, timeout: 10000
-        });
+        navigator.geolocation.watchPosition(updatePosition, handleError, { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 });
       }
     }
     initGPS();
 
     function startMapping() {
       if (watchId && !isPaused) return;
-      isPaused = false;
-      document.getElementById('btn-start').disabled = true;
-      document.getElementById('btn-pause').disabled = false;
-      document.getElementById('btn-stop').disabled = false;
-      document.getElementById('status').innerText = "Mappar...";
-      watchId = true; 
+      isPaused = false; document.getElementById('btn-start').disabled = true;
+      document.getElementById('btn-pause').disabled = false; document.getElementById('btn-stop').disabled = false;
+      document.getElementById('status').innerText = "Mappar..."; watchId = true; 
     }
-
     function pauseMapping() {
-      isPaused = true;
-      document.getElementById('btn-start').disabled = false;
+      isPaused = true; document.getElementById('btn-start').disabled = false;
       document.getElementById('btn-start').innerText = "Fortsätt";
-      document.getElementById('btn-pause').disabled = true;
-      document.getElementById('status').innerText = "Pausad";
+      document.getElementById('btn-pause').disabled = true; document.getElementById('status').innerText = "Pausad";
     }
-
     function stopMapping() {
       isPaused = true;
       if(currentPathCoords.length < 2) { alert("Stigen är för kort."); resetMappingState(); return; }
       processAndOpenSaveFlow();
     }
-
     function updatePosition(position) {
       const lat = position.coords.latitude; const lon = position.coords.longitude;
       const alt = position.coords.altitude || 0; let speed = position.coords.speed || 0; 
-      
       document.getElementById('speed').innerText = speed > 0 ? (speed * 3.6).toFixed(1) : "0";
-
-      if (!currentUserMarker) {
-        currentUserMarker = L.circleMarker([lat, lon], {color: 'white', fillColor: '#4ade80', fillOpacity: 1, radius: 6}).addTo(map);
-        map.setView([lat, lon], 16); 
-      } else {
-        currentUserMarker.setLatLng([lat, lon]);
-      }
+      if (!currentUserMarker) { currentUserMarker = L.circleMarker([lat, lon], {color: 'white', fillColor: '#4ade80', fillOpacity: 1, radius: 6}).addTo(map); map.setView([lat, lon], 16); 
+      } else currentUserMarker.setLatLng([lat, lon]);
       checkNearestTrail(lat, lon);
-
       if (!watchId || isPaused) return;
-
       if (currentPathCoords.length > 0) {
         const lastPt = currentPathCoords[currentPathCoords.length - 1];
         if (turf.distance(turf.point([lastPt[1], lastPt[0]]), turf.point([lon, lat]), {units: 'meters'}) < 1) return; 
       }
       document.getElementById('status').innerText = "Spelar in...";
       currentPathCoords.push([lat, lon, alt]);
-
       if (currentPathCoords.length > 1) {
-        currentPolylineElements.push(L.polyline([currentPathCoords[currentPathCoords.length-2], [lat, lon]], {
-          color: '#ffffff', weight: 4, opacity: 0.8, dashArray: '5, 10', isRecording: true
-        }).addTo(map));
+        currentPolylineElements.push(L.polyline([currentPathCoords[currentPathCoords.length-2], [lat, lon]], { color: '#ffffff', weight: 4, opacity: 0.8, dashArray: '5, 10', isRecording: true }).addTo(map));
       }
     }
 
     function processAndOpenSaveFlow() {
       let segments = []; let currentSegment = []; let isBacktracking = false; let lastBacktrackIndex = 0;
-
       for (let i = 0; i < currentPathCoords.length; i++) {
         let pt = turf.point([currentPathCoords[i][1], currentPathCoords[i][0]]);
         let isOverlappingOther = false;
         for (let trail of allTrails) {
           if (trail.coords.length < 2) continue;
-          if (turf.pointToLineDistance(pt, turf.lineString(trail.coords.map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) { 
-            isOverlappingOther = true; break;
-          }
+          if (turf.pointToLineDistance(pt, turf.lineString(trail.coords.map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) { isOverlappingOther = true; break; }
         }
         let isBacktrackingOwn = false;
         if (currentSegment.length > 5) {
-          if (turf.pointToLineDistance(pt, turf.lineString(currentSegment.slice(0, -4).map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) {
-            isBacktrackingOwn = true;
-          }
+          if (turf.pointToLineDistance(pt, turf.lineString(currentSegment.slice(0, -4).map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) isBacktrackingOwn = true;
         }
         if (isOverlappingOther || isBacktrackingOwn) {
           if (isBacktrackingOwn) { isBacktracking = true; lastBacktrackIndex = i; }
@@ -347,7 +338,6 @@
       }
       if (currentSegment.length >= 2) segments.push(currentSegment);
       if (segments.length === 0) { alert("Hela spåret rensades (överlapp)."); resetMappingState(); return; }
-
       savingSegments = segments; savingCurrentIndex = 0; editingTrailIndex = null; openSaveModal();
     }
 
@@ -369,64 +359,30 @@
       pushState();
       const name = document.getElementById('trail-name').value || "Namnlös stig";
       const color = document.getElementById('trail-color').value;
-
-      if (editingTrailIndex !== null) {
-        allTrails[editingTrailIndex].name = name; allTrails[editingTrailIndex].color = color;
-        editingTrailIndex = null;
+      if (editingTrailIndex !== null) { allTrails[editingTrailIndex].name = name; allTrails[editingTrailIndex].color = color; editingTrailIndex = null;
       } else {
         allTrails.push({ id: 't_' + Math.random().toString(36).substr(2, 9), name: name, color: color, coords: savingSegments[savingCurrentIndex] });
-        savingCurrentIndex++;
-        if (savingCurrentIndex < savingSegments.length) { openSaveModal(); return; }
+        savingCurrentIndex++; if (savingCurrentIndex < savingSegments.length) { openSaveModal(); return; }
       }
-      generateAutoIntersections(); 
-      saveDataSilently();
-      document.getElementById('save-modal').style.display = 'none';
+      generateAutoIntersections(); saveDataSilently(); document.getElementById('save-modal').style.display = 'none';
       resetMappingState(); renderAllTrails();
     }
-
     function editTrail(index) { editingTrailIndex = index; map.closePopup(); openSaveModal(); }
+    function deleteTrail(index) { if (confirm(`Vill du ta bort stigen: "${allTrails[index].name}"?`)) { pushState(); allTrails.splice(index, 1); saveDataSilently(); renderAllTrails(); } }
 
-    function deleteTrail(index) {
-      if (confirm(`Vill du ta bort stigen: "${allTrails[index].name}"?`)) {
-        pushState();
-        allTrails.splice(index, 1);
-        saveDataSilently(); renderAllTrails();
-      }
-    }
-
-    // --- DEDUBLECRING (RENSA DUBBELPUNKTER) ---
     function deduplicateTrail(index) {
-      pushState();
-      let trail = allTrails[index];
-      let initialCount = trail.coords.length;
-      let newCoords = [];
-
+      pushState(); let trail = allTrails[index]; let initialCount = trail.coords.length; let newCoords = [];
       for (let i = 0; i < trail.coords.length; i++) {
         let pt = trail.coords[i];
-        if (newCoords.length === 0) {
-          newCoords.push(pt);
-        } else {
+        if (newCoords.length === 0) newCoords.push(pt);
+        else {
           let last = newCoords[newCoords.length - 1];
-          // Ta bort helt identiska eller extremt nära punkter (< 0.5 meter)
-          let dist = turf.distance(
-            turf.point([last[1], last[0]]), 
-            turf.point([pt[1], pt[0]]), 
-            {units: 'meters'}
-          );
-          if (dist >= 0.5) {
-            newCoords.push(pt);
-          }
+          if (turf.distance(turf.point([last[1], last[0]]), turf.point([pt[1], pt[0]]), {units: 'meters'}) >= 0.5) newCoords.push(pt);
         }
       }
-
-      trail.coords = newCoords;
-      saveDataSilently();
-      renderAllTrails();
-      let removed = initialCount - newCoords.length;
-      alert(`Rensade ${removed} dubbelpunkt(er) från stigen "${trail.name}"!`);
+      trail.coords = newCoords; saveDataSilently(); renderAllTrails();
+      alert(`Rensade ${initialCount - newCoords.length} dubbelpunkt(er) från stigen "${trail.name}"!`);
     }
-
-    // --- KORSNINGAR (WAYPOINTS) ---
 
     function generateAutoIntersections() {
       let wpModified = false;
@@ -435,15 +391,11 @@
           let t1 = allTrails[i]; let t2 = allTrails[j];
           if (t1.coords.length < 2 || t2.coords.length < 2) continue;
           let intersects = turf.lineIntersect(turf.lineString(t1.coords.map(c => [c[1], c[0]])), turf.lineString(t2.coords.map(c => [c[1], c[0]])));
-          intersects.features.forEach(pt => {
-            let coords = pt.geometry.coordinates; 
-            wpModified = addAutoWaypoint(coords[1], coords[0], t1, t2) || wpModified;
-          });
+          intersects.features.forEach(pt => { wpModified = addAutoWaypoint(pt.geometry.coordinates[1], pt.geometry.coordinates[0], t1, t2) || wpModified; });
         }
       }
       if(wpModified) saveDataSilently();
     }
-
     function addAutoWaypoint(lat, lng, t1, t2) {
       let pt = turf.point([lng, lat]);
       for (let wp of waypoints) {
@@ -454,17 +406,9 @@
           return updated;
         }
       }
-      waypoints.push({ lat: lat, lng: lng, name: "Korsning", connectedTrails: [t1.id, t2.id] });
-      return true;
+      waypoints.push({ lat: lat, lng: lng, name: "Korsning", connectedTrails: [t1.id, t2.id] }); return true;
     }
-
-    function addWaypoint() {
-      pushState();
-      const center = map.getCenter();
-      waypoints.push({ lat: center.lat, lng: center.lng, name: "Ny korsning", connectedTrails: [] });
-      saveDataSilently(); renderAllTrails();
-    }
-
+    function addWaypoint() { pushState(); const center = map.getCenter(); waypoints.push({ lat: center.lat, lng: center.lng, name: "Ny korsning", connectedTrails: [] }); saveDataSilently(); renderAllTrails(); }
     function deleteWaypoint(index) { pushState(); waypoints.splice(index, 1); saveDataSilently(); renderAllTrails(); }
     function updateWaypointName(index, newName) { waypoints[index].name = newName; saveDataSilently(); }
 
@@ -476,265 +420,133 @@
 
       if (newState && !isConnected) wp.connectedTrails.push(trailId);
       else if (!newState && isConnected) wp.connectedTrails = wp.connectedTrails.filter(id => id !== trailId);
+      
       saveDataSilently();
+
+      // Fix för bugg: Uppdatera dragbarhet direkt
+      if (waypointMarkers[wpIndex]) {
+          if (wp.connectedTrails.length > 0) waypointMarkers[wpIndex].dragging.disable();
+          else waypointMarkers[wpIndex].dragging.enable();
+      }
     }
 
-    function updateWaypointPopup(index) {
-        if(waypointMarkers[index]) waypointMarkers[index].setPopupContent(getWaypointPopupHTML(index));
-    }
+    function updateWaypointPopup(index) { if(waypointMarkers[index]) waypointMarkers[index].setPopupContent(getWaypointPopupHTML(index)); }
 
     function snapWaypointTrails(wpIndex) {
-      pushState();
-      let wp = waypoints[wpIndex];
-      let wpPoint = turf.point([wp.lng, wp.lat]);
-      let connections = [];
-
+      pushState(); let wp = waypoints[wpIndex]; let wpPoint = turf.point([wp.lng, wp.lat]); let connections = [];
       wp.connectedTrails.forEach(trailId => {
         let trail = allTrails.find(t => t.id === trailId);
         if (trail) {
           let minDist = Infinity; let closestIdx = -1;
-          trail.coords.forEach((coord, i) => {
-            let dist = turf.distance(wpPoint, turf.point([coord[1], coord[0]]), {units: 'meters'});
-            if (dist < minDist) { minDist = dist; closestIdx = i; }
-          });
+          trail.coords.forEach((coord, i) => { let dist = turf.distance(wpPoint, turf.point([coord[1], coord[0]]), {units: 'meters'}); if (dist < minDist) { minDist = dist; closestIdx = i; } });
           if (closestIdx !== -1) connections.push({ trail: trail, idx: closestIdx });
         }
       });
-
       if (connections.length === 0) return alert("Välj minst en stig i listan.");
-
       let innerConn = connections.find(c => c.idx > 0 && c.idx < c.trail.coords.length - 1);
-      
       if (innerConn) {
-        wp.lat = innerConn.trail.coords[innerConn.idx][0];
-        wp.lng = innerConn.trail.coords[innerConn.idx][1];
-        
-        connections.forEach(c => {
-          if (c !== innerConn && (c.idx === 0 || c.idx === c.trail.coords.length - 1)) {
-            c.trail.coords[c.idx][0] = wp.lat; c.trail.coords[c.idx][1] = wp.lng;
-          }
-        });
-      } else {
-        connections.forEach(c => {
-            c.trail.coords[c.idx][0] = wp.lat; c.trail.coords[c.idx][1] = wp.lng;
-        });
-      }
-      saveDataSilently();
-      renderAllTrails(); 
+        wp.lat = innerConn.trail.coords[innerConn.idx][0]; wp.lng = innerConn.trail.coords[innerConn.idx][1];
+        connections.forEach(c => { if (c !== innerConn && (c.idx === 0 || c.idx === c.trail.coords.length - 1)) { c.trail.coords[c.idx][0] = wp.lat; c.trail.coords[c.idx][1] = wp.lng; } });
+      } else connections.forEach(c => { c.trail.coords[c.idx][0] = wp.lat; c.trail.coords[c.idx][1] = wp.lng; });
+      saveDataSilently(); renderAllTrails(); 
     }
 
     function splitTrailAtWaypoint(wpIndex, trailId) {
-        pushState();
-        let wp = waypoints[wpIndex];
-        let trail = allTrails.find(t => t.id === trailId);
-        if(!trail) return;
-        
-        let wpPoint = turf.point([wp.lng, wp.lat]);
-        let closestIdx = -1; let minDist = Infinity;
-        trail.coords.forEach((c, i) => {
-            let d = turf.distance(wpPoint, turf.point([c[1], c[0]]), {units: 'meters'});
-            if(d < minDist) { minDist = d; closestIdx = i; }
-        });
-
+        pushState(); let wp = waypoints[wpIndex]; let trail = allTrails.find(t => t.id === trailId); if(!trail) return;
+        let wpPoint = turf.point([wp.lng, wp.lat]); let closestIdx = -1; let minDist = Infinity;
+        trail.coords.forEach((c, i) => { let d = turf.distance(wpPoint, turf.point([c[1], c[0]]), {units: 'meters'}); if(d < minDist) { minDist = d; closestIdx = i; } });
         if (closestIdx > 0 && closestIdx < trail.coords.length - 1) {
-            let trail1Coords = trail.coords.slice(0, closestIdx + 1);
-            let trail2Coords = trail.coords.slice(closestIdx);
-            
+            let trail1Coords = trail.coords.slice(0, closestIdx + 1); let trail2Coords = trail.coords.slice(closestIdx);
             let newTrailId = 't_' + Math.random().toString(36).substr(2, 9);
             allTrails.push({ id: newTrailId, name: trail.name + " (Del 2)", color: trail.color, coords: trail2Coords });
-            trail.coords = trail1Coords;
-            
-            wp.connectedTrails.push(newTrailId);
+            trail.coords = trail1Coords; wp.connectedTrails.push(newTrailId);
             saveDataSilently(); renderAllTrails();
         }
     }
 
     function getWaypointPopupHTML(index) {
-        let wp = waypoints[index];
-        let innerTrailsHTML = '';
-        
+        let wp = waypoints[index]; let innerTrailsHTML = '';
         let trailCheckboxes = allTrails.map(t => {
             let isChecked = wp.connectedTrails.includes(t.id);
             if(isChecked) {
-                let minDist = Infinity; let closestIdx = -1;
-                let wpPt = turf.point([wp.lng, wp.lat]);
-                t.coords.forEach((c, i) => {
-                    let d = turf.distance(wpPt, turf.point([c[1], c[0]]), {units: 'meters'});
-                    if(d < minDist) { minDist = d; closestIdx = i; }
-                });
-                if(closestIdx > 0 && closestIdx < t.coords.length - 1 && minDist < 20) { 
-                    innerTrailsHTML += `<button class="popup-btn split-btn" onclick="splitTrailAtWaypoint(${index}, '${t.id}')">✂️ Dela ${t.name}</button>`;
-                }
+                let minDist = Infinity; let closestIdx = -1; let wpPt = turf.point([wp.lng, wp.lat]);
+                t.coords.forEach((c, i) => { let d = turf.distance(wpPt, turf.point([c[1], c[0]]), {units: 'meters'}); if(d < minDist) { minDist = d; closestIdx = i; } });
+                if(closestIdx > 0 && closestIdx < t.coords.length - 1 && minDist < 20) { innerTrailsHTML += `<button class="popup-btn split-btn" onclick="splitTrailAtWaypoint(${index}, '${t.id}')">✂️ Dela ${t.name}</button>`; }
             }
             return `<label style="display:block; cursor:pointer;"><input type="checkbox" onchange="toggleWaypointTrail(${index}, '${t.id}', this.checked); updateWaypointPopup(${index})" ${isChecked ? 'checked' : ''}> ${t.name}</label>`;
         }).join('');
-
-        // Om det finns dela-knappar läggs de i en skrollbar div!
         let splitSection = innerTrailsHTML !== '' ? `<div class="waypoint-split-list">${innerTrailsHTML}</div>` : '';
-
-        return `
-          <div style="text-align:center;">
-            <b>${wp.name}</b><br>
-            <input type="text" value="${wp.name}" onchange="updateWaypointName(${index}, this.value)" style="width:140px; text-align:center; margin: 4px 0; border: 1px solid #ccc; border-radius: 4px; padding: 4px; color: black;">
-            <div class="waypoint-trail-list">${trailCheckboxes}</div>
-            ${splitSection}
-            <button class="popup-btn link-btn" onclick="snapWaypointTrails(${index})">🔗 Koppla ihop punkter</button>
-            <button class="popup-btn delete-btn" onclick="deleteWaypoint(${index})">🗑️ Ta bort korsning</button>
-          </div>
-        `;
+        return `<div style="text-align:center;"><b>${wp.name}</b><br><input type="text" value="${wp.name}" onchange="updateWaypointName(${index}, this.value)" style="width:140px; text-align:center; margin: 4px 0; border: 1px solid #ccc; border-radius: 4px; padding: 4px; color: black;"><div class="waypoint-trail-list">${trailCheckboxes}</div>${splitSection}<button class="popup-btn link-btn" onclick="snapWaypointTrails(${index})">🔗 Koppla ihop punkter</button><button class="popup-btn delete-btn" onclick="deleteWaypoint(${index})">🗑️ Ta bort korsning</button></div>`;
     }
 
-    // --- SÄTT IHOP STIGAR (MERGE) ---
     function toggleMergeMode() {
-        isMerging = !isMerging;
-        const btn = document.getElementById('btn-merge-mode');
-        if(isMerging) {
-            btn.style.backgroundColor = 'var(--accent-color)'; btn.style.color = '#000';
-            btn.innerText = "Klicka på stig 1...";
-            mergeSelection = [];
-        } else {
-            btn.style.backgroundColor = 'var(--link-color)'; btn.style.color = 'white';
-            btn.innerText = "🔗 Sätt ihop";
-        }
+        isMerging = !isMerging; const btn = document.getElementById('btn-merge-mode');
+        if(isMerging) { btn.style.backgroundColor = 'var(--accent-color)'; btn.style.color = '#000'; btn.innerText = "Klicka på stig 1..."; mergeSelection = []; } 
+        else { btn.style.backgroundColor = 'var(--link-color)'; btn.style.color = 'white'; btn.innerText = "🔗 Sätt ihop"; }
     }
-
     function handleMergeClick(trailId) {
-        if(mergeSelection.length === 0) {
-            mergeSelection.push(trailId);
-            document.getElementById('btn-merge-mode').innerText = "Klicka på stig 2...";
-        } else if (mergeSelection.length === 1 && mergeSelection[0] !== trailId) {
-            mergeSelection.push(trailId); executeMerge();
-        }
+        if(mergeSelection.length === 0) { mergeSelection.push(trailId); document.getElementById('btn-merge-mode').innerText = "Klicka på stig 2..."; } 
+        else if (mergeSelection.length === 1 && mergeSelection[0] !== trailId) { mergeSelection.push(trailId); executeMerge(); }
     }
-
     function executeMerge() {
-        pushState();
-        let t1 = allTrails.find(t => t.id === mergeSelection[0]);
-        let t2 = allTrails.find(t => t.id === mergeSelection[1]);
+        pushState(); let t1 = allTrails.find(t => t.id === mergeSelection[0]); let t2 = allTrails.find(t => t.id === mergeSelection[1]);
         if(!t1 || !t2) return toggleMergeMode();
-
-        let len1 = turf.length(turf.lineString(t1.coords.map(c => [c[1], c[0]])));
-        let len2 = turf.length(turf.lineString(t2.coords.map(c => [c[1], c[0]])));
+        let len1 = turf.length(turf.lineString(t1.coords.map(c => [c[1], c[0]]))); let len2 = turf.length(turf.lineString(t2.coords.map(c => [c[1], c[0]])));
         let baseTrail = len1 > len2 ? t1 : t2;
-
-        let e1s = t1.coords[0]; let e1e = t1.coords[t1.coords.length-1];
-        let e2s = t2.coords[0]; let e2e = t2.coords[t2.coords.length-1];
-
-        let dists = [
-            { d: turf.distance(turf.point([e1s[1], e1s[0]]), turf.point([e2s[1], e2s[0]])), type: 'ss' },
-            { d: turf.distance(turf.point([e1s[1], e1s[0]]), turf.point([e2e[1], e2e[0]])), type: 'se' },
-            { d: turf.distance(turf.point([e1e[1], e1e[0]]), turf.point([e2s[1], e2s[0]])), type: 'es' },
-            { d: turf.distance(turf.point([e1e[1], e1e[0]]), turf.point([e2e[1], e2e[0]])), type: 'ee' }
-        ];
-        dists.sort((a,b) => a.d - b.d);
-        let best = dists[0].type;
-
-        let newCoords = [];
-        if (best === 'es') newCoords = t1.coords.concat(t2.coords);
-        else if (best === 'ee') newCoords = t1.coords.concat([...t2.coords].reverse());
-        else if (best === 'ss') newCoords = [...t1.coords].reverse().concat(t2.coords);
-        else if (best === 'se') newCoords = t2.coords.concat(t1.coords);
-
+        let e1s = t1.coords[0]; let e1e = t1.coords[t1.coords.length-1]; let e2s = t2.coords[0]; let e2e = t2.coords[t2.coords.length-1];
+        let dists = [ { d: turf.distance(turf.point([e1s[1], e1s[0]]), turf.point([e2s[1], e2s[0]])), type: 'ss' }, { d: turf.distance(turf.point([e1s[1], e1s[0]]), turf.point([e2e[1], e2e[0]])), type: 'se' }, { d: turf.distance(turf.point([e1e[1], e1e[0]]), turf.point([e2s[1], e2s[0]])), type: 'es' }, { d: turf.distance(turf.point([e1e[1], e1e[0]]), turf.point([e2e[1], e2e[0]])), type: 'ee' } ];
+        dists.sort((a,b) => a.d - b.d); let best = dists[0].type; let newCoords = [];
+        if (best === 'es') newCoords = t1.coords.concat(t2.coords); else if (best === 'ee') newCoords = t1.coords.concat([...t2.coords].reverse()); else if (best === 'ss') newCoords = [...t1.coords].reverse().concat(t2.coords); else if (best === 'se') newCoords = t2.coords.concat(t1.coords);
         let newTrail = { id: 't_' + Math.random().toString(36).substr(2, 9), name: baseTrail.name, color: baseTrail.color, coords: newCoords };
-
-        allTrails = allTrails.filter(t => t.id !== t1.id && t.id !== t2.id);
-        allTrails.push(newTrail);
-
-        waypoints.forEach(wp => {
-            if(wp.connectedTrails.includes(t1.id) || wp.connectedTrails.includes(t2.id)) {
-                wp.connectedTrails = wp.connectedTrails.filter(id => id !== t1.id && id !== t2.id);
-                wp.connectedTrails.push(newTrail.id);
-            }
-        });
-
-        saveDataSilently();
-        toggleMergeMode(); renderAllTrails();
+        allTrails = allTrails.filter(t => t.id !== t1.id && t.id !== t2.id); allTrails.push(newTrail);
+        waypoints.forEach(wp => { if(wp.connectedTrails.includes(t1.id) || wp.connectedTrails.includes(t2.id)) { wp.connectedTrails = wp.connectedTrails.filter(id => id !== t1.id && id !== t2.id); wp.connectedTrails.push(newTrail.id); } });
+        saveDataSilently(); toggleMergeMode(); renderAllTrails();
     }
-
 
     function renderAllTrails() {
       waypointMarkers = {}; 
-      let globalMinAlt = 0; let globalMaxAlt = 10;
-      allTrails.forEach(trail => {
-        trail.coords.forEach(c => {
-          if (c[2] > globalMaxAlt) globalMaxAlt = c[2];
-          if (c[2] < globalMinAlt) globalMinAlt = c[2];
-        });
-      });
+      let scale = getScaleFactor();
+      let baseW = Math.max(1.5, 8 * scale); let bgW = Math.max(3, 15 * scale); let segW = Math.max(1, 4 * scale); let mSize = Math.max(4, 14 * scale);
+      let borderW = Math.max(1, 2 * scale);
 
+      let globalMinAlt = 0; let globalMaxAlt = 10;
+      allTrails.forEach(trail => { trail.coords.forEach(c => { if (c[2] > globalMaxAlt) globalMaxAlt = c[2]; if (c[2] < globalMinAlt) globalMinAlt = c[2]; }); });
       map.eachLayer((layer) => { 
         if (layer instanceof L.Polyline && layer !== currentUserMarker && !layer.options.isRecording) map.removeLayer(layer); 
-        if (layer instanceof L.Marker || layer instanceof L.CircleMarker) {
-            if (layer !== currentUserMarker && !layer.options.isRecording) map.removeLayer(layer);
-        }
+        if (layer instanceof L.Marker || layer instanceof L.CircleMarker) { if (layer !== currentUserMarker && !layer.options.isRecording) map.removeLayer(layer); }
       });
-
       allTrails.forEach(trail => {
         if (trail.coords.length < 2) return;
-        L.polyline(trail.coords.map(c => [c[0], c[1]]), {
-          color: shadeColor(trail.color, -50), weight: 8, lineCap: 'round', lineJoin: 'round'
-        }).addTo(map);
+        L.polyline(trail.coords.map(c => [c[0], c[1]]), { color: shadeColor(trail.color, -50), weight: baseW, lineCap: 'round', lineJoin: 'round', isTrailBase: true }).addTo(map);
       });
-
       allTrails.forEach((trail, index) => {
-        const fullPath = L.polyline(trail.coords.map(c => [c[0], c[1]]), { opacity: 0, weight: 15 });
-
-        const popupContent = `
-          <div style="text-align:center; font-family:sans-serif; min-width: 130px;">
-            <b style="font-size:14px;">${trail.name}</b><br>
-            <button class="popup-btn dedup-btn" onclick="deduplicateTrail(${index})">🧹 Rensa dubbletter</button>
-            <button class="popup-btn edit-btn" onclick="editTrail(${index})">⚙️ Ändra namn/färg</button>
-            <button class="popup-btn delete-btn" onclick="deleteTrail(${index})">🗑️ Ta bort stig</button>
-          </div>
-        `;
-
+        const fullPath = L.polyline(trail.coords.map(c => [c[0], c[1]]), { opacity: 0, weight: bgW, isTrailBg: true });
+        const popupContent = `<div style="text-align:center; font-family:sans-serif; min-width: 130px;"><b style="font-size:14px;">${trail.name}</b><br><button class="popup-btn dedup-btn" onclick="deduplicateTrail(${index})">🧹 Rensa dubbletter</button><button class="popup-btn edit-btn" onclick="editTrail(${index})">⚙️ Ändra namn/färg</button><button class="popup-btn delete-btn" onclick="deleteTrail(${index})">🗑️ Ta bort stig</button></div>`;
         fullPath.on('click', (e) => {
             L.DomEvent.stopPropagation(e);
-            
-            if (isMerging) {
-                handleMergeClick(trail.id);
-            } else if (activeWaypointIndex !== null) {
-                toggleWaypointTrail(activeWaypointIndex, trail.id);
-                updateWaypointPopup(activeWaypointIndex);
-            } else {
-                L.popup().setLatLng(e.latlng).setContent(popupContent).openOn(map);
-            }
+            if (isMerging) handleMergeClick(trail.id);
+            else if (activeWaypointIndex !== null) { toggleWaypointTrail(activeWaypointIndex, trail.id); updateWaypointPopup(activeWaypointIndex); } 
+            else L.popup().setLatLng(e.latlng).setContent(popupContent).openOn(map);
         });
         fullPath.addTo(map);
-
         for (let i = 0; i < trail.coords.length - 1; i++) {
           const p1 = trail.coords[i]; const p2 = trail.coords[i+1];
-          const alt = (p1[2] + p2[2]) / 2;
-          let ratio = (alt - globalMinAlt) / (globalMaxAlt - globalMinAlt);
-          ratio = Math.max(0, Math.min(1, ratio));
-
-          L.polyline([[p1[0], p1[1]], [p2[0], p2[1]]], {
-            color: shadeColor(trail.color, (ratio - 0.5) * 80), weight: 4, lineCap: 'round', lineJoin: 'round'
-          }).addTo(map);
+          const alt = (p1[2] + p2[2]) / 2; let ratio = Math.max(0, Math.min(1, (alt - globalMinAlt) / (globalMaxAlt - globalMinAlt)));
+          L.polyline([[p1[0], p1[1]], [p2[0], p2[1]]], { color: shadeColor(trail.color, (ratio - 0.5) * 80), weight: segW, lineCap: 'round', lineJoin: 'round', isTrailSeg: true }).addTo(map);
         }
       });
-
       waypoints.forEach((wp, index) => {
-        const icon = L.divIcon({
-          className: 'custom-waypoint-icon',
-          html: '<div style="width:16px; height:16px; background:#f59e0b; border:2px solid #fff; border-radius:50%; box-shadow: 0 0 4px rgba(0,0,0,0.5);"></div>',
-          iconSize: [20, 20], iconAnchor: [10, 10]
-        });
-
-        const marker = L.marker([wp.lat, wp.lng], { icon: icon, draggable: true }).addTo(map);
-        waypointMarkers[index] = marker;
-
-        marker.bindPopup(getWaypointPopupHTML(index));
-
+        let html = `<div style="width:${mSize}px; height:${mSize}px; background:#f59e0b; border:${borderW}px solid #fff; border-radius:50%; box-shadow: 0 0 3px rgba(0,0,0,0.5); box-sizing: border-box;"></div>`;
+        const icon = L.divIcon({ className: 'custom-waypoint-icon', html: html, iconSize: [mSize, mSize], iconAnchor: [mSize/2, mSize/2] });
+        
+        // Buggfix: Avaktivera dragning om den är ansluten till en stig
+        const isLinked = wp.connectedTrails && wp.connectedTrails.length > 0;
+        const marker = L.marker([wp.lat, wp.lng], { icon: icon, draggable: !isLinked, isWaypoint: true }).addTo(map);
+        
+        waypointMarkers[index] = marker; marker.bindPopup(getWaypointPopupHTML(index));
         marker.on('popupopen', () => { activeWaypointIndex = index; });
         marker.on('popupclose', () => { activeWaypointIndex = null; });
-
-        marker.on('dragend', function(e) {
-          pushState();
-          const pos = e.target.getLatLng();
-          waypoints[index].lat = pos.lat; waypoints[index].lng = pos.lng;
-          saveDataSilently();
-        });
+        marker.on('dragend', function(e) { pushState(); const pos = e.target.getLatLng(); waypoints[index].lat = pos.lat; waypoints[index].lng = pos.lng; saveDataSilently(); });
       });
     }
 
@@ -753,28 +565,14 @@
       if (trail) { element.innerText = trail.name; element.style.color = trail.color; } 
       else { element.innerText = "Ingen stig nära"; element.style.color = "#a1a1aa"; }
     }
-    function resetMappingState() {
-      watchId = null; isPaused = false; currentPathCoords = [];
-      currentPolylineElements.forEach(p => map.removeLayer(p)); currentPolylineElements = [];
-      document.getElementById('btn-start').disabled = false; document.getElementById('btn-start').innerText = "Starta";
-      document.getElementById('btn-pause').disabled = true; document.getElementById('btn-stop').disabled = true;
-      document.getElementById('speed').innerText = "0"; document.getElementById('status').innerText = "Redo";
-    }
-    function exportTrails() {
-      const a = document.createElement('a'); 
-      a.setAttribute("href", "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ trails: allTrails, waypoints: waypoints }))); 
-      a.setAttribute("download", "skogsspar_data.json"); a.click();
-    }
+    function resetMappingState() { watchId = null; isPaused = false; currentPathCoords = []; currentPolylineElements.forEach(p => map.removeLayer(p)); currentPolylineElements = []; document.getElementById('btn-start').disabled = false; document.getElementById('btn-start').innerText = "Starta"; document.getElementById('btn-pause').disabled = true; document.getElementById('btn-stop').disabled = true; document.getElementById('speed').innerText = "0"; document.getElementById('status').innerText = "Redo"; }
+    function exportTrails() { const a = document.createElement('a'); a.setAttribute("href", "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({ trails: allTrails, waypoints: waypoints }))); a.setAttribute("download", "skogsspar_data.json"); a.click(); }
     function importTrails(event) {
       const reader = new FileReader();
       reader.onload = (e) => { 
-        pushState();
-        const imported = JSON.parse(e.target.result);
+        pushState(); const imported = JSON.parse(e.target.result);
         if (Array.isArray(imported)) allTrails = allTrails.concat(imported); 
-        else {
-          if(imported.trails) allTrails = allTrails.concat(imported.trails);
-          if(imported.waypoints) waypoints = waypoints.concat(imported.waypoints);
-        }
+        else { if(imported.trails) allTrails = allTrails.concat(imported.trails); if(imported.waypoints) waypoints = waypoints.concat(imported.waypoints); }
         allTrails.forEach(t => { if (!t.id) t.id = 't_' + Math.random().toString(36).substr(2, 9); });
         generateAutoIntersections(); saveDataSilently(); renderAllTrails(); 
       };
