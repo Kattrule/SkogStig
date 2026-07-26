@@ -34,6 +34,15 @@
       filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
     }
 
+    /* Mörk stil på popups/menyer */
+    .leaflet-popup-content-wrapper, .leaflet-popup-tip {
+      background-color: var(--surface-color) !important;
+      color: var(--text-color) !important;
+      border: 1px solid var(--accent-color);
+    }
+    .leaflet-popup-content-wrapper { border-radius: 12px; }
+    .leaflet-popup-close-button { color: var(--text-color) !important; }
+
     #ui-container {
       position: absolute; bottom: 20px; left: 10px; right: 10px;
       z-index: 1000; display: flex; flex-direction: column; gap: 10px;
@@ -68,6 +77,7 @@
     button.mode-toggle { background-color: #1e3323; border: 1px solid var(--accent-color); padding: 8px 12px; }
     button.small-btn { padding: 8px 12px; }
     button.merge-btn { background-color: var(--link-color); color: white; border: 1px solid #fff; }
+    button.center-btn { background-color: var(--warning-color); color: black; display: none; border: 1px solid #fff;}
 
     .popup-btn {
       color: black; border: none; padding: 6px 10px; margin-top: 6px; 
@@ -87,7 +97,7 @@
     }
     #save-modal input {
       width: 100%; padding: 10px; margin-top: 10px; margin-bottom: 10px;
-      background: var(--bg-color); color: var(--text-color); border: none; box-sizing: border-box;
+      background: var(--bg-color); color: var(--text-color); border: 1px solid #2d4a34; box-sizing: border-box; border-radius: 4px;
     }
     
     .top-bar {
@@ -105,23 +115,28 @@
     .waypoint-trail-list {
       max-height: 80px; overflow-y: auto; text-align: left; 
       font-size: 12px; margin: 8px 0; padding: 4px; 
-      border: 1px solid #ccc; border-radius: 4px; background: #fff; color: #000;
+      border: 1px solid #2d4a34; border-radius: 4px; background: var(--bg-color); color: var(--text-color);
     }
-
     .waypoint-split-list {
       max-height: 82px; overflow-y: auto; margin: 6px 0;
-      border-top: 1px dashed #ccc; padding-top: 4px;
+      border-top: 1px dashed var(--accent-color); padding-top: 4px;
+    }
+    .popup-input {
+      background: var(--bg-color); color: var(--text-color);
+      border: 1px solid #2d4a34; border-radius: 4px; padding: 4px;
+      width: 140px; text-align: center; margin: 4px 0; box-sizing: border-box;
     }
   </style>
 </head>
 <body>
 
   <div id="map"></div>
-  <div class="app-version">v1.7.2</div>
+  <div class="app-version">v1.8.0</div>
 
   <div class="top-bar">
     <div class="top-bar-left">
       <button class="mode-toggle" onclick="toggleMapMode()" id="btn-map-mode">🛰️ Satellit</button>
+      <button class="small-btn center-btn" onclick="centerMapOnUser()" id="btn-center">🎯 Centrera</button>
       <button class="small-btn" onclick="undo()" id="btn-undo" disabled title="Ångra">↩️</button>
       <button class="small-btn" onclick="redo()" id="btn-redo" disabled title="Gör om">↪️</button>
     </div>
@@ -172,6 +187,19 @@
 
     const map = L.map('map', { layers: [osmLayer], zoomControl: false, maxZoom: 22 }).fitWorld();
     let currentMode = 'forest';
+    let userFollowMode = true;
+
+    // Pausa uppföljningen om användaren drar i kartan manuellt
+    map.on('dragstart', () => { 
+        userFollowMode = false; 
+        document.getElementById('btn-center').style.display = 'inline-block';
+    });
+
+    function centerMapOnUser() {
+        userFollowMode = true;
+        document.getElementById('btn-center').style.display = 'none';
+        if (currentUserMarker) map.setView(currentUserMarker.getLatLng(), map.getZoom(), {animate: true});
+    }
 
     function toggleMapMode() {
         const btn = document.getElementById('btn-map-mode');
@@ -198,7 +226,6 @@
       redoHistory = []; 
       updateUndoRedoButtons();
     }
-
     function undo() {
       if (undoHistory.length === 0) return;
       redoHistory.push(JSON.stringify({ trails: allTrails, waypoints: waypoints }));
@@ -206,7 +233,6 @@
       allTrails = state.trails; waypoints = state.waypoints;
       saveDataSilently(); renderAllTrails(); updateUndoRedoButtons();
     }
-
     function redo() {
       if (redoHistory.length === 0) return;
       undoHistory.push(JSON.stringify({ trails: allTrails, waypoints: waypoints }));
@@ -214,31 +240,21 @@
       allTrails = state.trails; waypoints = state.waypoints;
       saveDataSilently(); renderAllTrails(); updateUndoRedoButtons();
     }
-
     function updateUndoRedoButtons() {
       document.getElementById('btn-undo').disabled = undoHistory.length === 0;
       document.getElementById('btn-redo').disabled = redoHistory.length === 0;
     }
-
     function saveDataSilently() {
       localStorage.setItem('skogsspar_trails', JSON.stringify(allTrails));
       localStorage.setItem('skogsspar_waypoints', JSON.stringify(waypoints));
     }
 
-    // --- Skalningssystem för utzoomning ---
     function getScaleFactor() {
         let z = map.getZoom();
-        // Krymper hälften för varje nivå under zoom 15, stannar på min 0.05
         return z >= 15 ? 1.0 : Math.max(0.05, Math.pow(2, z - 15));
     }
-
     function updateMapScaling() {
-        let scale = getScaleFactor();
-        let baseW = Math.max(1.5, 8 * scale);
-        let bgW = Math.max(3, 15 * scale);
-        let segW = Math.max(1, 4 * scale);
-        let mSize = Math.max(4, 14 * scale); // 14px är nu standardstorleken
-        
+        let scale = getScaleFactor(); let baseW = Math.max(1.5, 8 * scale); let bgW = Math.max(3, 15 * scale); let segW = Math.max(1, 4 * scale); let mSize = Math.max(4, 14 * scale);
         map.eachLayer((layer) => {
             if (layer.options) {
                 if (layer.options.isTrailBg) layer.setStyle({ weight: bgW });
@@ -252,22 +268,13 @@
             }
         });
     }
-
-    // Lyssna på zoom för att justera tjocklek och storlek utan att stänga popup-rutor
     map.on('zoomend', updateMapScaling);
 
-    let currentPathCoords = []; 
-    let currentPolylineElements = [];
-    let watchId = null;
-    let isPaused = false;
-    let currentUserMarker = null;
-    let savingSegments = [];
-    let savingCurrentIndex = 0;
-    let editingTrailIndex = null;
-    let activeWaypointIndex = null;
-    let waypointMarkers = {}; 
-    let isMerging = false;
-    let mergeSelection = [];
+    let currentPathCoords = []; let currentPolylineElements = [];
+    let watchId = null; let isPaused = false; let currentUserMarker = null;
+    let savingSegments = []; let savingCurrentIndex = 0; let editingTrailIndex = null;
+    let activeWaypointIndex = null; let waypointMarkers = {}; 
+    let isMerging = false; let mergeSelection = [];
 
     renderAllTrails();
     updateNearestTrailText(null);
@@ -283,7 +290,7 @@
       if (watchId && !isPaused) return;
       isPaused = false; document.getElementById('btn-start').disabled = true;
       document.getElementById('btn-pause').disabled = false; document.getElementById('btn-stop').disabled = false;
-      document.getElementById('status').innerText = "Mappar..."; watchId = true; 
+      document.getElementById('status').innerText = "Mappar..."; watchId = true; userFollowMode = true; document.getElementById('btn-center').style.display = 'none';
     }
     function pauseMapping() {
       isPaused = true; document.getElementById('btn-start').disabled = false;
@@ -299,8 +306,19 @@
       const lat = position.coords.latitude; const lon = position.coords.longitude;
       const alt = position.coords.altitude || 0; let speed = position.coords.speed || 0; 
       document.getElementById('speed').innerText = speed > 0 ? (speed * 3.6).toFixed(1) : "0";
-      if (!currentUserMarker) { currentUserMarker = L.circleMarker([lat, lon], {color: 'white', fillColor: '#4ade80', fillOpacity: 1, radius: 6}).addTo(map); map.setView([lat, lon], 16); 
-      } else currentUserMarker.setLatLng([lat, lon]);
+
+      if (!currentUserMarker) { 
+          currentUserMarker = L.circleMarker([lat, lon], {color: 'white', fillColor: '#4ade80', fillOpacity: 1, radius: 6}).addTo(map); 
+          map.setView([lat, lon], 16); 
+      } else {
+          currentUserMarker.setLatLng([lat, lon]);
+      }
+      
+      // Mjuk panorering om vi spelar in OCH inte har dragit kartan manuellt
+      if (userFollowMode && watchId && !isPaused) {
+          map.setView([lat, lon], map.getZoom(), {animate: true});
+      }
+
       checkNearestTrail(lat, lon);
       if (!watchId || isPaused) return;
       if (currentPathCoords.length > 0) {
@@ -314,29 +332,60 @@
       }
     }
 
+    // --- NY SMART 30-METERS LOGIK ---
     function processAndOpenSaveFlow() {
-      let segments = []; let currentSegment = []; let isBacktracking = false; let lastBacktrackIndex = 0;
+      let segments = []; let currentSegment = []; let overlapPoints = [];
+
       for (let i = 0; i < currentPathCoords.length; i++) {
         let pt = turf.point([currentPathCoords[i][1], currentPathCoords[i][0]]);
-        let isOverlappingOther = false;
+        let isOverlap = false;
+
+        // Överlappar du andra stigar (korsar)?
         for (let trail of allTrails) {
           if (trail.coords.length < 2) continue;
-          if (turf.pointToLineDistance(pt, turf.lineString(trail.coords.map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) { isOverlappingOther = true; break; }
+          if (turf.pointToLineDistance(pt, turf.lineString(trail.coords.map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) { isOverlap = true; break; }
         }
-        let isBacktrackingOwn = false;
-        if (currentSegment.length > 5) {
-          if (turf.pointToLineDistance(pt, turf.lineString(currentSegment.slice(0, -4).map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) isBacktrackingOwn = true;
+
+        // Backar du på dig själv?
+        let isBacktrack = false;
+        if (currentSegment.length > 30) {
+          if (turf.pointToLineDistance(pt, turf.lineString(currentSegment.slice(0, -30).map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) isBacktrack = true;
         }
-        if (isOverlappingOther || isBacktrackingOwn) {
-          if (isBacktrackingOwn) { isBacktracking = true; lastBacktrackIndex = i; }
-          if (currentSegment.length >= 2) segments.push(currentSegment);
-          currentSegment = []; 
+
+        if (isOverlap || isBacktrack) {
+          overlapPoints.push(currentPathCoords[i]);
         } else {
-          if (isBacktracking) { currentSegment.push(currentPathCoords[lastBacktrackIndex]); isBacktracking = false; }
+          // När vi svänger av och "isOverlap" blir false, kollar vi hur lång bit vi överlappade!
+          if (overlapPoints.length > 0) {
+            let overlapLen = overlapPoints.length > 1 ? turf.length(turf.lineString(overlapPoints.map(c => [c[1], c[0]])), {units: 'meters'}) : 0;
+            if (overlapLen >= 30) { 
+              // Du har gått över 30 meter. Kapar upp stigen!
+              if (currentSegment.length >= 2) segments.push(currentSegment);
+              // Startar nästa stig PÅ knutpunkten!
+              currentSegment = [overlapPoints[overlapPoints.length - 1]];
+            } else {
+              // Bara ett litet korsande (under 30m). Fortsätt som ingenting har hänt!
+              currentSegment.push(...overlapPoints);
+            }
+            overlapPoints = [];
+          }
           currentSegment.push(currentPathCoords[i]);
         }
       }
-      if (currentSegment.length >= 2) segments.push(currentSegment);
+
+      // Stäng av ev. buffert när du trycker stopp
+      if (overlapPoints.length > 0) {
+        let overlapLen = overlapPoints.length > 1 ? turf.length(turf.lineString(overlapPoints.map(c => [c[1], c[0]])), {units: 'meters'}) : 0;
+        if (overlapLen >= 30) {
+          if (currentSegment.length >= 2) segments.push(currentSegment);
+        } else {
+          currentSegment.push(...overlapPoints);
+          if (currentSegment.length >= 2) segments.push(currentSegment);
+        }
+      } else {
+        if (currentSegment.length >= 2) segments.push(currentSegment);
+      }
+
       if (segments.length === 0) { alert("Hela spåret rensades (överlapp)."); resetMappingState(); return; }
       savingSegments = segments; savingCurrentIndex = 0; editingTrailIndex = null; openSaveModal();
     }
@@ -354,7 +403,6 @@
         document.getElementById('trail-color').value = "#4ade80";
       }
     }
-
     function handleModalSubmit() {
       pushState();
       const name = document.getElementById('trail-name').value || "Namnlös stig";
@@ -413,21 +461,35 @@
     function updateWaypointName(index, newName) { waypoints[index].name = newName; saveDataSilently(); }
 
     function toggleWaypointTrail(wpIndex, trailId, forceState) {
-      pushState();
-      let wp = waypoints[wpIndex];
-      let isConnected = wp.connectedTrails.includes(trailId);
+      pushState(); let wp = waypoints[wpIndex]; let isConnected = wp.connectedTrails.includes(trailId);
       let newState = forceState !== undefined ? forceState : !isConnected;
-
       if (newState && !isConnected) wp.connectedTrails.push(trailId);
       else if (!newState && isConnected) wp.connectedTrails = wp.connectedTrails.filter(id => id !== trailId);
-      
       saveDataSilently();
-
-      // Fix för bugg: Uppdatera dragbarhet direkt
       if (waypointMarkers[wpIndex]) {
-          if (wp.connectedTrails.length > 0) waypointMarkers[wpIndex].dragging.disable();
-          else waypointMarkers[wpIndex].dragging.enable();
+          if (isWaypointDraggable(wpIndex)) waypointMarkers[wpIndex].dragging.enable();
+          else waypointMarkers[wpIndex].dragging.disable();
       }
+    }
+
+    // --- KONTROLLERA OM KORSNING ÄR DRAGBAR (Bara ansluten till ändpunkter) ---
+    function isWaypointDraggable(wpIndex) {
+        let wp = waypoints[wpIndex];
+        if (!wp.connectedTrails || wp.connectedTrails.length === 0) return true;
+        let wpPt = turf.point([wp.lng, wp.lat]);
+        for (let tId of wp.connectedTrails) {
+            let trail = allTrails.find(t => t.id === tId);
+            if (trail && trail.coords.length > 1) {
+                let minDist = Infinity; let closestIdx = -1;
+                trail.coords.forEach((c, i) => {
+                    let d = turf.distance(wpPt, turf.point([c[1], c[0]]), {units: 'meters'});
+                    if (d < minDist) { minDist = d; closestIdx = i; }
+                });
+                // Sitter korsningen nånstans i MITTEN av en stig? Då kan vi inte dra den!
+                if (closestIdx > 0 && closestIdx < trail.coords.length - 1) return false;
+            }
+        }
+        return true;
     }
 
     function updateWaypointPopup(index) { if(waypointMarkers[index]) waypointMarkers[index].setPopupContent(getWaypointPopupHTML(index)); }
@@ -476,7 +538,7 @@
             return `<label style="display:block; cursor:pointer;"><input type="checkbox" onchange="toggleWaypointTrail(${index}, '${t.id}', this.checked); updateWaypointPopup(${index})" ${isChecked ? 'checked' : ''}> ${t.name}</label>`;
         }).join('');
         let splitSection = innerTrailsHTML !== '' ? `<div class="waypoint-split-list">${innerTrailsHTML}</div>` : '';
-        return `<div style="text-align:center;"><b>${wp.name}</b><br><input type="text" value="${wp.name}" onchange="updateWaypointName(${index}, this.value)" style="width:140px; text-align:center; margin: 4px 0; border: 1px solid #ccc; border-radius: 4px; padding: 4px; color: black;"><div class="waypoint-trail-list">${trailCheckboxes}</div>${splitSection}<button class="popup-btn link-btn" onclick="snapWaypointTrails(${index})">🔗 Koppla ihop punkter</button><button class="popup-btn delete-btn" onclick="deleteWaypoint(${index})">🗑️ Ta bort korsning</button></div>`;
+        return `<div style="text-align:center;"><b>${wp.name}</b><br><input type="text" class="popup-input" value="${wp.name}" onchange="updateWaypointName(${index}, this.value)"><div class="waypoint-trail-list">${trailCheckboxes}</div>${splitSection}<button class="popup-btn link-btn" onclick="snapWaypointTrails(${index})">🔗 Koppla ihop punkter</button><button class="popup-btn delete-btn" onclick="deleteWaypoint(${index})">🗑️ Ta bort korsning</button></div>`;
     }
 
     function toggleMergeMode() {
@@ -505,10 +567,7 @@
 
     function renderAllTrails() {
       waypointMarkers = {}; 
-      let scale = getScaleFactor();
-      let baseW = Math.max(1.5, 8 * scale); let bgW = Math.max(3, 15 * scale); let segW = Math.max(1, 4 * scale); let mSize = Math.max(4, 14 * scale);
-      let borderW = Math.max(1, 2 * scale);
-
+      let scale = getScaleFactor(); let baseW = Math.max(1.5, 8 * scale); let bgW = Math.max(3, 15 * scale); let segW = Math.max(1, 4 * scale); let mSize = Math.max(4, 14 * scale); let borderW = Math.max(1, 2 * scale);
       let globalMinAlt = 0; let globalMaxAlt = 10;
       allTrails.forEach(trail => { trail.coords.forEach(c => { if (c[2] > globalMaxAlt) globalMaxAlt = c[2]; if (c[2] < globalMinAlt) globalMinAlt = c[2]; }); });
       map.eachLayer((layer) => { 
@@ -539,14 +598,33 @@
         let html = `<div style="width:${mSize}px; height:${mSize}px; background:#f59e0b; border:${borderW}px solid #fff; border-radius:50%; box-shadow: 0 0 3px rgba(0,0,0,0.5); box-sizing: border-box;"></div>`;
         const icon = L.divIcon({ className: 'custom-waypoint-icon', html: html, iconSize: [mSize, mSize], iconAnchor: [mSize/2, mSize/2] });
         
-        // Buggfix: Avaktivera dragning om den är ansluten till en stig
-        const isLinked = wp.connectedTrails && wp.connectedTrails.length > 0;
-        const marker = L.marker([wp.lat, wp.lng], { icon: icon, draggable: !isLinked, isWaypoint: true }).addTo(map);
+        const isDraggable = isWaypointDraggable(index);
+        const marker = L.marker([wp.lat, wp.lng], { icon: icon, draggable: isDraggable, isWaypoint: true }).addTo(map);
         
         waypointMarkers[index] = marker; marker.bindPopup(getWaypointPopupHTML(index));
         marker.on('popupopen', () => { activeWaypointIndex = index; });
         marker.on('popupclose', () => { activeWaypointIndex = null; });
-        marker.on('dragend', function(e) { pushState(); const pos = e.target.getLatLng(); waypoints[index].lat = pos.lat; waypoints[index].lng = pos.lng; saveDataSilently(); });
+        
+        marker.on('dragend', function(e) { 
+            pushState(); const pos = e.target.getLatLng(); 
+            let wpPtBefore = turf.point([wp.lng, wp.lat]);
+            waypoints[index].lat = pos.lat; waypoints[index].lng = pos.lng; 
+            
+            // Flytta kopplade ändpunkter
+            wp.connectedTrails.forEach(tId => {
+                let trail = allTrails.find(t => t.id === tId);
+                if (trail && trail.coords.length > 1) {
+                    let startPt = turf.point([trail.coords[0][1], trail.coords[0][0]]);
+                    let endPt = turf.point([trail.coords[trail.coords.length-1][1], trail.coords[trail.coords.length-1][0]]);
+                    let dStart = turf.distance(startPt, wpPtBefore, {units: 'meters'});
+                    let dEnd = turf.distance(endPt, wpPtBefore, {units: 'meters'});
+
+                    if (dStart <= dEnd && dStart < 30) { trail.coords[0][0] = pos.lat; trail.coords[0][1] = pos.lng; }
+                    else if (dEnd < dStart && dEnd < 30) { trail.coords[trail.coords.length-1][0] = pos.lat; trail.coords[trail.coords.length-1][1] = pos.lng; }
+                }
+            });
+            saveDataSilently(); renderAllTrails();
+        });
       });
     }
 
