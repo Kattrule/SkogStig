@@ -131,7 +131,7 @@
 <body>
 
   <div id="map"></div>
-  <div class="app-version">v1.8.1</div>
+  <div class="app-version">v1.8.2</div>
 
   <div class="top-bar">
     <div class="top-bar-left">
@@ -189,7 +189,6 @@
     let currentMode = 'forest';
     let userFollowMode = true;
 
-    // Pausa uppföljningen om användaren drar i kartan manuellt
     map.on('dragstart', () => { 
         userFollowMode = false; 
         document.getElementById('btn-center').style.display = 'inline-block';
@@ -314,7 +313,6 @@
           currentUserMarker.setLatLng([lat, lon]);
       }
       
-      // Mjuk panorering om vi spelar in OCH inte har dragit kartan manuellt
       if (userFollowMode && watchId && !isPaused) {
           map.setView([lat, lon], map.getZoom(), {animate: true});
       }
@@ -332,62 +330,106 @@
       }
     }
 
-    // --- NY SMART 30-METERS LOGIK ---
+    // --- NY SMART STATE MACHINE (Följ- och Avvikelse-logik) ---
     function processAndOpenSaveFlow() {
-      let segments = []; let currentSegment = []; let overlapPoints = [];
+      let segments = [];
+      let currentSegment = [];
+      let state = 'NEW_TRAIL'; // Vi börjar alltid med att anta att det är en ny stig
+      let overlapBuffer = [];
+      let deviationBuffer = [];
+      let lastGoodPoint = null;
 
       for (let i = 0; i < currentPathCoords.length; i++) {
-        let pt = turf.point([currentPathCoords[i][1], currentPathCoords[i][0]]);
-        let isOverlap = false;
-
-        // Överlappar du andra stigar (korsar)?
-        for (let trail of allTrails) {
-          if (trail.coords.length < 2) continue;
-          if (turf.pointToLineDistance(pt, turf.lineString(trail.coords.map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) { isOverlap = true; break; }
-        }
-
-        // Backar du på dig själv?
-        let isBacktrack = false;
-        if (currentSegment.length > 30) {
-          if (turf.pointToLineDistance(pt, turf.lineString(currentSegment.slice(0, -30).map(c => [c[1], c[0]])), {units: 'meters'}) <= 8) isBacktrack = true;
-        }
-
-        if (isOverlap || isBacktrack) {
-          overlapPoints.push(currentPathCoords[i]);
-        } else {
-          // När vi svänger av och "isOverlap" blir false, kollar vi hur lång bit vi överlappade!
-          if (overlapPoints.length > 0) {
-            let overlapLen = overlapPoints.length > 1 ? turf.length(turf.lineString(overlapPoints.map(c => [c[1], c[0]])), {units: 'meters'}) : 0;
-            if (overlapLen >= 30) { 
-              // Du har gått över 30 meter. Kapar upp stigen!
-              if (currentSegment.length >= 2) segments.push(currentSegment);
-              // Startar nästa stig PÅ knutpunkten!
-              currentSegment = [overlapPoints[overlapPoints.length - 1]];
-            } else {
-              // Bara ett litet korsande (under 30m). Fortsätt som ingenting har hänt!
-              currentSegment.push(...overlapPoints);
-            }
-            overlapPoints = [];
+        let ptCoords = currentPathCoords[i];
+        let pt = turf.point([ptCoords[1], ptCoords[0]]);
+        
+        // Hitta hur nära vi är en befintlig stig
+        let minDistToTrail = Infinity;
+        if (allTrails.length > 0) {
+          for (let trail of allTrails) {
+            if (trail.coords.length < 2) continue;
+            let d = turf.pointToLineDistance(pt, turf.lineString(trail.coords.map(c => [c[1], c[0]])), {units: 'meters'});
+            if (d < minDistToTrail) minDistToTrail = d;
           }
-          currentSegment.push(currentPathCoords[i]);
+        }
+
+        // Sparar den senaste punkten där vi nuddade (eller var inom 6m från) en gammal stig
+        if (minDistToTrail <= 6) {
+          lastGoodPoint = ptCoords; 
+        }
+
+        if (state === 'NEW_TRAIL') {
+          currentSegment.push(ptCoords);
+
+          if (minDistToTrail <= 6) {
+            overlapBuffer.push(ptCoords);
+            // Kollar hur långt vi kört längs den befintliga stigen
+            if (overlapBuffer.length > 1) {
+              let overlapLen = turf.length(turf.lineString(overlapBuffer.map(c => [c[1], c[0]])), {units: 'meters'});
+              
+              if (overlapLen >= 15) {
+                // Vi har följt stigen i minst 15 meter! Vi går över till "Följ-läge".
+                state = 'FOLLOWING';
+                
+                // Backa bandet: Klipp bort överlappningen från den nya stigen vi skapade,
+                // men spara den absolut första punkten så stigarna kopplas ihop snyggt.
+                let pointsToRemove = overlapBuffer.length - 1;
+                currentSegment = currentSegment.slice(0, currentSegment.length - pointsToRemove);
+                
+                if (currentSegment.length >= 2) {
+                  segments.push([...currentSegment]);
+                }
+                
+                currentSegment = [];
+                overlapBuffer = [];
+              }
+            }
+          } else {
+            // Om vi bara korsade stigen (körde ifrån direkt) nollställer vi bufferten
+            overlapBuffer = []; 
+          }
+        } 
+        else if (state === 'FOLLOWING') {
+          if (minDistToTrail > 6) {
+            // Vi har lämnat 6m-zonen. Börja registrera en avvikelse.
+            if (deviationBuffer.length === 0 && lastGoodPoint) {
+              deviationBuffer.push(lastGoodPoint); // Förankra början i den gamla stigen
+            }
+            deviationBuffer.push(ptCoords);
+            
+            if (deviationBuffer.length > 1) {
+              let deviationLen = turf.length(turf.lineString(deviationBuffer.map(c => [c[1], c[0]])), {units: 'meters'});
+              
+              if (deviationLen >= 20) {
+                // Vi har åkt minst 20m BORT från stigen! Vi ritar ny stig igen!
+                state = 'NEW_TRAIL';
+                currentSegment = [...deviationBuffer];
+                deviationBuffer = [];
+              }
+            }
+          } else {
+            // Vi råkade bara köra utanför en kort sekund, vi är tillbaka på stigen innan 20m.
+            deviationBuffer = []; 
+          }
         }
       }
 
-      // Stäng av ev. buffert när du trycker stopp
-      if (overlapPoints.length > 0) {
-        let overlapLen = overlapPoints.length > 1 ? turf.length(turf.lineString(overlapPoints.map(c => [c[1], c[0]])), {units: 'meters'}) : 0;
-        if (overlapLen >= 30) {
-          if (currentSegment.length >= 2) segments.push(currentSegment);
-        } else {
-          currentSegment.push(...overlapPoints);
-          if (currentSegment.length >= 2) segments.push(currentSegment);
-        }
-      } else {
-        if (currentSegment.length >= 2) segments.push(currentSegment);
+      // Om vi avslutade loggningen medan vi ritar en ny stig, lägg till den
+      if (state === 'NEW_TRAIL' && currentSegment.length >= 2) {
+        segments.push(currentSegment);
       }
 
-      if (segments.length === 0) { alert("Hela spåret rensades (överlapp)."); resetMappingState(); return; }
-      savingSegments = segments; savingCurrentIndex = 0; editingTrailIndex = null; openSaveModal();
+      // Om man har åkt 100% på gamla stigar blir det ingen ny stig att spara
+      if (segments.length === 0) { 
+        alert("Inget nytt att spara. Du följde bara gamla stigar eller körde inte tillräckligt långt bort (20m)."); 
+        resetMappingState(); 
+        return; 
+      }
+      
+      savingSegments = segments; 
+      savingCurrentIndex = 0; 
+      editingTrailIndex = null; 
+      openSaveModal();
     }
 
     function openSaveModal() {
@@ -472,7 +514,6 @@
       }
     }
 
-    // --- KONTROLLERA OM KORSNING ÄR DRAGBAR (Bara ansluten till ändpunkter) ---
     function isWaypointDraggable(wpIndex) {
         let wp = waypoints[wpIndex];
         if (!wp.connectedTrails || wp.connectedTrails.length === 0) return true;
@@ -485,7 +526,6 @@
                     let d = turf.distance(wpPt, turf.point([c[1], c[0]]), {units: 'meters'});
                     if (d < minDist) { minDist = d; closestIdx = i; }
                 });
-                // Sitter korsningen nånstans i MITTEN av en stig? Då kan vi inte dra den!
                 if (closestIdx > 0 && closestIdx < trail.coords.length - 1) return false;
             }
         }
@@ -610,7 +650,6 @@
             let wpPtBefore = turf.point([wp.lng, wp.lat]);
             waypoints[index].lat = pos.lat; waypoints[index].lng = pos.lng; 
             
-            // Flytta kopplade ändpunkter
             wp.connectedTrails.forEach(tId => {
                 let trail = allTrails.find(t => t.id === tId);
                 if (trail && trail.coords.length > 1) {
