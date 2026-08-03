@@ -34,7 +34,6 @@
       filter: invert(100%) hue-rotate(180deg) brightness(95%) contrast(90%);
     }
 
-    /* Mörk stil på popups/menyer */
     .leaflet-popup-content-wrapper, .leaflet-popup-tip {
       background-color: var(--surface-color) !important;
       color: var(--text-color) !important;
@@ -131,7 +130,7 @@
 <body>
 
   <div id="map"></div>
-  <div class="app-version">v1.8.2</div>
+  <div class="app-version">v1.8.3</div>
 
   <div class="top-bar">
     <div class="top-bar-left">
@@ -177,6 +176,25 @@
 
   <script>
     if ('serviceWorker' in navigator) { navigator.serviceWorker.register('sw.js'); }
+
+    // --- WAKE LOCK API (Håll skärmen vaken) ---
+    let wakeLock = null;
+    async function requestWakeLock() {
+      if ('wakeLock' in navigator) {
+        try {
+          wakeLock = await navigator.wakeLock.request('screen');
+        } catch (err) {
+          console.warn('Wake Lock error:', err);
+        }
+      }
+    }
+    document.addEventListener('visibilitychange', () => {
+      // Om användaren byter app och sen kommer tillbaka till kartan: återaktivera wake lock
+      if (document.visibilityState === 'visible' && wakeLock !== null) {
+        requestWakeLock();
+      }
+    });
+    // ------------------------------------------
 
     const osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 22, maxNativeZoom: 19, className: 'dark-tiles'
@@ -290,7 +308,11 @@
       isPaused = false; document.getElementById('btn-start').disabled = true;
       document.getElementById('btn-pause').disabled = false; document.getElementById('btn-stop').disabled = false;
       document.getElementById('status').innerText = "Mappar..."; watchId = true; userFollowMode = true; document.getElementById('btn-center').style.display = 'none';
+      
+      // Håll skärmen vaken när vi mappar
+      requestWakeLock();
     }
+    
     function pauseMapping() {
       isPaused = true; document.getElementById('btn-start').disabled = false;
       document.getElementById('btn-start').innerText = "Fortsätt";
@@ -330,11 +352,10 @@
       }
     }
 
-    // --- NY SMART STATE MACHINE (Följ- och Avvikelse-logik) ---
     function processAndOpenSaveFlow() {
       let segments = [];
       let currentSegment = [];
-      let state = 'NEW_TRAIL'; // Vi börjar alltid med att anta att det är en ny stig
+      let state = 'NEW_TRAIL'; 
       let overlapBuffer = [];
       let deviationBuffer = [];
       let lastGoodPoint = null;
@@ -343,7 +364,6 @@
         let ptCoords = currentPathCoords[i];
         let pt = turf.point([ptCoords[1], ptCoords[0]]);
         
-        // Hitta hur nära vi är en befintlig stig
         let minDistToTrail = Infinity;
         if (allTrails.length > 0) {
           for (let trail of allTrails) {
@@ -353,83 +373,48 @@
           }
         }
 
-        // Sparar den senaste punkten där vi nuddade (eller var inom 6m från) en gammal stig
         if (minDistToTrail <= 6) {
           lastGoodPoint = ptCoords; 
         }
 
         if (state === 'NEW_TRAIL') {
           currentSegment.push(ptCoords);
-
           if (minDistToTrail <= 6) {
             overlapBuffer.push(ptCoords);
-            // Kollar hur långt vi kört längs den befintliga stigen
             if (overlapBuffer.length > 1) {
               let overlapLen = turf.length(turf.lineString(overlapBuffer.map(c => [c[1], c[0]])), {units: 'meters'});
-              
               if (overlapLen >= 15) {
-                // Vi har följt stigen i minst 15 meter! Vi går över till "Följ-läge".
                 state = 'FOLLOWING';
-                
-                // Backa bandet: Klipp bort överlappningen från den nya stigen vi skapade,
-                // men spara den absolut första punkten så stigarna kopplas ihop snyggt.
                 let pointsToRemove = overlapBuffer.length - 1;
                 currentSegment = currentSegment.slice(0, currentSegment.length - pointsToRemove);
                 
-                if (currentSegment.length >= 2) {
-                  segments.push([...currentSegment]);
-                }
-                
-                currentSegment = [];
-                overlapBuffer = [];
+                if (currentSegment.length >= 2) segments.push([...currentSegment]);
+                currentSegment = []; overlapBuffer = [];
               }
             }
-          } else {
-            // Om vi bara korsade stigen (körde ifrån direkt) nollställer vi bufferten
-            overlapBuffer = []; 
-          }
+          } else { overlapBuffer = []; }
         } 
         else if (state === 'FOLLOWING') {
           if (minDistToTrail > 6) {
-            // Vi har lämnat 6m-zonen. Börja registrera en avvikelse.
-            if (deviationBuffer.length === 0 && lastGoodPoint) {
-              deviationBuffer.push(lastGoodPoint); // Förankra början i den gamla stigen
-            }
+            if (deviationBuffer.length === 0 && lastGoodPoint) deviationBuffer.push(lastGoodPoint); 
             deviationBuffer.push(ptCoords);
             
             if (deviationBuffer.length > 1) {
               let deviationLen = turf.length(turf.lineString(deviationBuffer.map(c => [c[1], c[0]])), {units: 'meters'});
-              
               if (deviationLen >= 20) {
-                // Vi har åkt minst 20m BORT från stigen! Vi ritar ny stig igen!
                 state = 'NEW_TRAIL';
                 currentSegment = [...deviationBuffer];
                 deviationBuffer = [];
               }
             }
-          } else {
-            // Vi råkade bara köra utanför en kort sekund, vi är tillbaka på stigen innan 20m.
-            deviationBuffer = []; 
-          }
+          } else { deviationBuffer = []; }
         }
       }
 
-      // Om vi avslutade loggningen medan vi ritar en ny stig, lägg till den
-      if (state === 'NEW_TRAIL' && currentSegment.length >= 2) {
-        segments.push(currentSegment);
-      }
-
-      // Om man har åkt 100% på gamla stigar blir det ingen ny stig att spara
-      if (segments.length === 0) { 
-        alert("Inget nytt att spara. Du följde bara gamla stigar eller körde inte tillräckligt långt bort (20m)."); 
-        resetMappingState(); 
-        return; 
-      }
+      if (state === 'NEW_TRAIL' && currentSegment.length >= 2) segments.push(currentSegment);
+      if (segments.length === 0) { alert("Inget nytt att spara. Du följde bara gamla stigar eller körde inte tillräckligt långt bort (20m)."); resetMappingState(); return; }
       
-      savingSegments = segments; 
-      savingCurrentIndex = 0; 
-      editingTrailIndex = null; 
-      openSaveModal();
+      savingSegments = segments; savingCurrentIndex = 0; editingTrailIndex = null; openSaveModal();
     }
 
     function openSaveModal() {
@@ -445,6 +430,7 @@
         document.getElementById('trail-color').value = "#4ade80";
       }
     }
+    
     function handleModalSubmit() {
       pushState();
       const name = document.getElementById('trail-name').value || "Namnlös stig";
@@ -457,6 +443,7 @@
       generateAutoIntersections(); saveDataSilently(); document.getElementById('save-modal').style.display = 'none';
       resetMappingState(); renderAllTrails();
     }
+    
     function editTrail(index) { editingTrailIndex = index; map.closePopup(); openSaveModal(); }
     function deleteTrail(index) { if (confirm(`Vill du ta bort stigen: "${allTrails[index].name}"?`)) { pushState(); allTrails.splice(index, 1); saveDataSilently(); renderAllTrails(); } }
 
@@ -474,18 +461,45 @@
       alert(`Rensade ${initialCount - newCoords.length} dubbelpunkt(er) från stigen "${trail.name}"!`);
     }
 
+    // --- UPPDATERAD LOGIK FÖR KORSNINGAR ---
     function generateAutoIntersections() {
       let wpModified = false;
       for (let i = 0; i < allTrails.length; i++) {
         for (let j = i + 1; j < allTrails.length; j++) {
           let t1 = allTrails[i]; let t2 = allTrails[j];
           if (t1.coords.length < 2 || t2.coords.length < 2) continue;
-          let intersects = turf.lineIntersect(turf.lineString(t1.coords.map(c => [c[1], c[0]])), turf.lineString(t2.coords.map(c => [c[1], c[0]])));
-          intersects.features.forEach(pt => { wpModified = addAutoWaypoint(pt.geometry.coordinates[1], pt.geometry.coordinates[0], t1, t2) || wpModified; });
+          
+          let line1 = turf.lineString(t1.coords.map(c => [c[1], c[0]]));
+          let line2 = turf.lineString(t2.coords.map(c => [c[1], c[0]]));
+          
+          // 1. Linjer som faktiskt skär genom varandra (korsar)
+          let intersects = turf.lineIntersect(line1, line2);
+          intersects.features.forEach(pt => { 
+            wpModified = addAutoWaypoint(pt.geometry.coordinates[1], pt.geometry.coordinates[0], t1, t2) || wpModified; 
+          });
+
+          // 2. Linjer vars ändar ligger exakt på (eller max 2m ifrån) den andra stigen
+          let t1Ends = [t1.coords[0], t1.coords[t1.coords.length-1]];
+          t1Ends.forEach(endPt => {
+              let pt = turf.point([endPt[1], endPt[0]]);
+              if (turf.pointToLineDistance(pt, line2, {units: 'meters'}) < 2) {
+                  wpModified = addAutoWaypoint(endPt[0], endPt[1], t1, t2) || wpModified;
+              }
+          });
+          
+          let t2Ends = [t2.coords[0], t2.coords[t2.coords.length-1]];
+          t2Ends.forEach(endPt => {
+              let pt = turf.point([endPt[1], endPt[0]]);
+              if (turf.pointToLineDistance(pt, line1, {units: 'meters'}) < 2) {
+                  wpModified = addAutoWaypoint(endPt[0], endPt[1], t1, t2) || wpModified;
+              }
+          });
         }
       }
       if(wpModified) saveDataSilently();
     }
+    // ----------------------------------------
+
     function addAutoWaypoint(lat, lng, t1, t2) {
       let pt = turf.point([lng, lat]);
       for (let wp of waypoints) {
